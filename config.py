@@ -35,6 +35,9 @@ POEM_FILE_PATH = Path(__file__).parent / "poems" / "test_poem.txt"
 DATABASE_FILE_PATH = Path(__file__).parent / "poetry_transformer.db"
 DATABASE_ENABLE_LOGGING = False  # Set to True for debugging
 
+# Output database for detailed translation events (same DB used by manager)
+# ============================================================================
+
 # ============================================================================
 # SENSOR CONFIGURATION
 # ============================================================================
@@ -61,6 +64,9 @@ DISPLAY_OUTPUT_MODE = "console"
 
 # File path for file output mode
 DISPLAY_OUTPUT_FILE_PATH = Path(__file__).parent / "output" / "transformed_poem.txt"
+
+# Streaming JSONL output for animation / installation
+STREAM_OUTPUT_JSONL_PATH = Path(__file__).parent / "output" / "translation_stream.jsonl"
 
 # ============================================================================
 # TRANSFORMATION PHASE CONFIGURATION
