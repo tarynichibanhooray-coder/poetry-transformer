@@ -1,6 +1,6 @@
 """
 Database Manager for Poetry Transformer
-Handles all SQLite operations for caching translations and synonyms
+Handles all SQLite operations for caching translations, synonyms, and translation events
 """
 
 import sqlite3
@@ -13,12 +13,12 @@ import config
 
 
 class DatabaseManager:
-    """Manages SQLite database operations for translation caching"""
+    """Manages SQLite database operations for translation caching and events"""
 
     def __init__(self, database_path: Path = None):
         """
         Initialize database connection and create tables if needed
-        
+
         Args:
             database_path: Path to SQLite database file
         """
@@ -31,6 +31,8 @@ class DatabaseManager:
     def initialize_database_connection(self) -> None:
         """Establish connection to SQLite database"""
         try:
+            # Ensure parent directory exists
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
             self.connection = sqlite3.connect(str(self.database_path))
             self.connection.row_factory = sqlite3.Row
             self.cursor = self.connection.cursor()
@@ -45,21 +47,12 @@ class DatabaseManager:
         self.create_word_cache_table()
         self.create_phrase_cache_table()
         self.create_translation_history_table()
+        self.create_translation_events_table()
         self.commit_database_changes()
 
     def create_word_cache_table(self) -> None:
         """
         Create table for storing individual word translations and synonyms
-        
-        Columns:
-            id: Unique identifier
-            source_word: Original word in source language
-            target_word: Primary translation in target language
-            synonyms_json: JSON array of up to 7 synonyms
-            source_language: Language code of source
-            target_language: Language code of target
-            created_at: Timestamp of creation
-            last_accessed_at: Timestamp of last usage
         """
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS word_cache (
@@ -79,16 +72,6 @@ class DatabaseManager:
     def create_phrase_cache_table(self) -> None:
         """
         Create table for storing multi-word phrase translations
-        
-        Columns:
-            id: Unique identifier
-            source_phrase: Original phrase in source language
-            target_phrase: Translation in target language
-            phrase_word_count: Number of words in phrase
-            source_language: Language code of source
-            target_language: Language code of target
-            created_at: Timestamp of creation
-            last_accessed_at: Timestamp of last usage
         """
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS phrase_cache (
@@ -108,16 +91,6 @@ class DatabaseManager:
     def create_translation_history_table(self) -> None:
         """
         Create table for tracking all translation requests made to AI
-        
-        Columns:
-            id: Unique identifier
-            request_type: 'word' or 'phrase'
-            source_text: Text that was translated
-            target_text: Resulting translation
-            tokens_used: Total tokens consumed from API
-            source_language: Language code of source
-            target_language: Language code of target
-            timestamp: When the request was made
         """
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS translation_history (
@@ -132,6 +105,47 @@ class DatabaseManager:
         );
         """
         self.cursor.execute(create_table_sql)
+
+    def create_translation_events_table(self) -> None:
+        """
+        Create table for storing detailed translation events (the process log)
+
+        Columns:
+            id: Unique identifier
+            sequence_index: Monotonic sequence number for ordering events
+            timestamp: When the event occurred
+            unit_level: word|phrase|clause|sentence|poem|phase_transition
+            unit_path: identifier for the unit (e.g., word index or range)
+            previous_state: Text snapshot before the change
+            new_state: Text snapshot after the change
+            reason: Why the change occurred
+            confidence: Float 0-1
+            alternatives_json: JSON array of rejected or alternative options
+            triggered_by_context: 0/1
+            context_snapshot_json: JSON object with contextual metadata
+        """
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS translation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sequence_index INTEGER NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            unit_level TEXT NOT NULL,
+            unit_path TEXT,
+            previous_state TEXT,
+            new_state TEXT,
+            reason TEXT,
+            confidence REAL,
+            alternatives_json TEXT,
+            triggered_by_context INTEGER DEFAULT 0,
+            context_snapshot_json TEXT
+        );
+        """
+        self.cursor.execute(create_table_sql)
+        # Index for fast ordering
+        try:
+            self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_sequence ON translation_events(sequence_index);")
+        except sqlite3.Error:
+            pass
 
     def commit_database_changes(self) -> None:
         """Commit all pending database changes"""
@@ -158,14 +172,6 @@ class DatabaseManager:
     ) -> Optional[Dict]:
         """
         Retrieve a cached word translation from database
-        
-        Args:
-            source_word: Original word to look up
-            source_language: Language code of source
-            target_language: Language code of target
-            
-        Returns:
-            Dictionary with word data or None if not found
         """
         query = """
         SELECT id, source_word, target_word, synonyms_json, created_at
@@ -174,7 +180,7 @@ class DatabaseManager:
         """
         self.cursor.execute(query, (source_word, source_language, target_language))
         row = self.cursor.fetchone()
-        
+
         if row:
             self.update_word_cache_last_accessed_timestamp(row['id'])
             return {
@@ -196,21 +202,11 @@ class DatabaseManager:
     ) -> int:
         """
         Store a new word translation with synonyms in database
-        
-        Args:
-            source_word: Original word
-            target_word: Primary translation
-            synonyms: List of up to 7 synonyms
-            source_language: Language code of source
-            target_language: Language code of target
-            
-        Returns:
-            ID of inserted record
         """
-        # Ensure we don't exceed 7 synonyms
+        # Ensure we don't exceed configured synonyms
         limited_synonyms = synonyms[:config.MAX_SYNONYMS_PER_WORD]
-        synonyms_json = json.dumps(limited_synonyms)
-        
+        synonyms_json = json.dumps(limited_synonyms, ensure_ascii=False)
+
         insert_sql = """
         INSERT OR IGNORE INTO word_cache
         (source_word, target_word, synonyms_json, source_language, target_language)
@@ -231,14 +227,6 @@ class DatabaseManager:
     ) -> Optional[Dict]:
         """
         Retrieve a cached phrase translation from database
-        
-        Args:
-            source_phrase: Original phrase to look up
-            source_language: Language code of source
-            target_language: Language code of target
-            
-        Returns:
-            Dictionary with phrase data or None if not found
         """
         query = """
         SELECT id, source_phrase, target_phrase, phrase_word_count, created_at
@@ -247,7 +235,7 @@ class DatabaseManager:
         """
         self.cursor.execute(query, (source_phrase, source_language, target_language))
         row = self.cursor.fetchone()
-        
+
         if row:
             self.update_phrase_cache_last_accessed_timestamp(row['id'])
             return {
@@ -268,18 +256,9 @@ class DatabaseManager:
     ) -> int:
         """
         Store a new phrase translation in database
-        
-        Args:
-            source_phrase: Original phrase
-            target_phrase: Translated phrase
-            source_language: Language code of source
-            target_language: Language code of target
-            
-        Returns:
-            ID of inserted record
         """
         word_count = len(source_phrase.split())
-        
+
         insert_sql = """
         INSERT OR IGNORE INTO phrase_cache
         (source_phrase, target_phrase, phrase_word_count, source_language, target_language)
@@ -303,17 +282,6 @@ class DatabaseManager:
     ) -> int:
         """
         Record a translation history entry for analytics
-        
-        Args:
-            request_type: 'word' or 'phrase'
-            source_text: Original text
-            target_text: Translation result
-            source_language: Language code of source
-            target_language: Language code of target
-            tokens_used: API tokens consumed (optional)
-            
-        Returns:
-            ID of inserted record
         """
         insert_sql = """
         INSERT INTO translation_history
@@ -327,12 +295,83 @@ class DatabaseManager:
         self.commit_database_changes()
         return self.cursor.lastrowid
 
+    def record_event(self, event: Dict) -> int:
+        """
+        Record a structured translation event into translation_events table.
+
+        Expected keys in event dict:
+            sequence_index (int) -- required
+            unit_level (str) -- 'word'|'phrase'|'clause'|'sentence'|'poem'|'phase_transition'
+            unit_path (str|optional)
+            previous_state (str|optional)
+            new_state (str|optional)
+            reason (str|optional)
+            confidence (float|optional)
+            alternatives (list|optional)
+            triggered_by_context (bool|optional)
+            context_snapshot (dict|optional)
+        """
+        seq = event.get('sequence_index')
+        unit_level = event.get('unit_level')
+        unit_path = event.get('unit_path')
+        previous_state = event.get('previous_state')
+        new_state = event.get('new_state')
+        reason = event.get('reason')
+        confidence = event.get('confidence')
+        alternatives = event.get('alternatives')
+        triggered = 1 if event.get('triggered_by_context') else 0
+        context_snapshot = event.get('context_snapshot')
+
+        insert_sql = """
+        INSERT INTO translation_events
+        (sequence_index, unit_level, unit_path, previous_state, new_state, reason, confidence, alternatives_json, triggered_by_context, context_snapshot_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.cursor.execute(
+            insert_sql,
+            (
+                seq,
+                unit_level,
+                unit_path,
+                previous_state,
+                new_state,
+                reason,
+                confidence,
+                json.dumps(alternatives, ensure_ascii=False) if alternatives is not None else None,
+                triggered,
+                json.dumps(context_snapshot, ensure_ascii=False) if context_snapshot is not None else None
+            )
+        )
+        self.commit_database_changes()
+        return self.cursor.lastrowid
+
+    def query_events(self, unit_level: str = None, limit: int = 100) -> List[Dict]:
+        """
+        Query recent translation events
+        """
+        if unit_level:
+            query = "SELECT * FROM translation_events WHERE unit_level = ? ORDER BY sequence_index ASC LIMIT ?"
+            self.cursor.execute(query, (unit_level, limit))
+        else:
+            query = "SELECT * FROM translation_events ORDER BY sequence_index ASC LIMIT ?"
+            self.cursor.execute(query, (limit,))
+        rows = self.cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    def export_events_json(self, path: Path) -> None:
+        """
+        Export all translation events as a JSON array to the given path
+        """
+        events = self.query_events(unit_level=None, limit=1000000)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(events, fh, ensure_ascii=False, indent=2)
+        if config.VERBOSE_LOGGING:
+            print(f"✓ Exported {len(events)} events to {path}")
+
     def update_word_cache_last_accessed_timestamp(self, word_cache_id: int) -> None:
         """
         Update the last accessed timestamp for a word cache entry
-        
-        Args:
-            word_cache_id: ID of word cache record
         """
         update_sql = """
         UPDATE word_cache
@@ -345,9 +384,6 @@ class DatabaseManager:
     def update_phrase_cache_last_accessed_timestamp(self, phrase_cache_id: int) -> None:
         """
         Update the last accessed timestamp for a phrase cache entry
-        
-        Args:
-            phrase_cache_id: ID of phrase cache record
         """
         update_sql = """
         UPDATE phrase_cache
@@ -360,9 +396,6 @@ class DatabaseManager:
     def get_all_translation_history(self) -> List[Dict]:
         """
         Retrieve all translation history entries for analytics
-        
-        Returns:
-            List of all translation history records
         """
         query = "SELECT * FROM translation_history ORDER BY timestamp DESC"
         self.cursor.execute(query)
@@ -372,9 +405,6 @@ class DatabaseManager:
     def count_cached_word_translations(self) -> int:
         """
         Count total cached word translations
-        
-        Returns:
-            Number of words in cache
         """
         query = "SELECT COUNT(*) as count FROM word_cache"
         self.cursor.execute(query)
@@ -383,9 +413,6 @@ class DatabaseManager:
     def count_cached_phrase_translations(self) -> int:
         """
         Count total cached phrase translations
-        
-        Returns:
-            Number of phrases in cache
         """
         query = "SELECT COUNT(*) as count FROM phrase_cache"
         self.cursor.execute(query)
@@ -394,9 +421,6 @@ class DatabaseManager:
     def count_total_api_requests_made(self) -> int:
         """
         Count total API requests recorded in history
-        
-        Returns:
-            Number of API requests made
         """
         query = "SELECT COUNT(*) as count FROM translation_history"
         self.cursor.execute(query)
@@ -405,9 +429,6 @@ class DatabaseManager:
     def calculate_total_tokens_used(self) -> int:
         """
         Calculate total tokens used across all API requests
-        
-        Returns:
-            Sum of all tokens used
         """
         query = "SELECT COALESCE(SUM(tokens_used), 0) as total FROM translation_history"
         self.cursor.execute(query)
