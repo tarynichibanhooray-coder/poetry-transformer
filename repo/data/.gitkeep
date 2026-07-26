@@ -1,0 +1,3 @@
+# Keep this directory for data files used by the application
+
+Place dataset files here (CSV/JSON/etc.). This file ensures the directory is committed to the repository.
