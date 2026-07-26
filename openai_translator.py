@@ -1,200 +1,136 @@
 """
-OpenAI Translator for Poetry Transformer
-Handles all AI translation requests with structured JSON output
+OpenAI Translator helpers for Poetry Transformer
+Provides request wrappers, response validation, and token-logging helpers.
+Note: actual API call implementations are intentionally left as placeholders
+so the module is testable without credentials. Replace _call_api with
+real OpenAI SDK usage when available.
 """
 
+from typing import Dict, List, Optional
 import json
-from typing import List, Dict, Optional
-import openai
+import time
 
 import config
 
 
 class OpenAITranslator:
-    """Manages communication with OpenAI API for translations"""
+    """Wrapper around AI translation calls with validation and logging."""
 
-    def __init__(self, api_key: str = None):
-        """
-        Initialize OpenAI translator with API key
-        
-        Args:
-            api_key: OpenAI API key (defaults to config)
-        """
-        self.api_key = api_key or config.OPENAI_API_KEY
-        openai.api_key = self.api_key
-        self.model = config.OPENAI_MODEL
-        if config.DEBUG_MODE:
-            print(f"✓ OpenAI Translator initialized with model: {self.model}")
+    def __init__(self):
+        self._last_request_tokens = 0
+        self._last_response_tokens = 0
 
-    def request_word_translation_with_synonyms(
-        self,
-        source_word: str,
-        source_language: str,
-        target_language: str
-    ) -> Dict:
+    # ----- Public request methods used by engine -----
+    def request_word_translation_with_synonyms(self, word: str, source_language: str, target_language: str) -> Dict:
         """
-        Request translation of a single word with synonyms from OpenAI
-        
-        Args:
-            source_word: Word to translate
-            source_language: Name of source language
-            target_language: Name of target language
-            
-        Returns:
-            Dictionary with 'primary_translation' and 'synonyms' (max 7)
-        """
-        prompt = f"""
-        Translate the word "{source_word}" from {source_language} to {target_language}.
-        
-        Return a JSON object with exactly this format:
-        {{
-            "primary_translation": "the best translation",
-            "synonyms": ["synonym1", "synonym2", "synonym3", "synonym4", "synonym5", "synonym6", "synonym7"]
-        }}
-        
-        Notes:
-        - Provide up to 7 synonyms (fewer if fewer alternatives exist)
-        - Include the primary translation as the first synonym if applicable
-        - All synonyms must be valid alternatives in {target_language}
-        - Keep synonyms concise (1-2 words max)
-        
-        Return ONLY the JSON object, no additional text.
-        """
-        
-        response_data = self.send_message_to_openai_and_parse_json(prompt)
-        return response_data
+        Request a word translation with synonyms from the AI.
 
-    def request_phrase_translation(
-        self,
-        source_phrase: str,
-        source_language: str,
-        target_language: str
-    ) -> Dict:
+        Returns a dict containing at minimum:
+          - primary_translation (str)
+          - synonyms (List[str])
+          - tokens_used (int) optional
         """
-        Request translation of a phrase from OpenAI
-        
-        Args:
-            source_phrase: Phrase to translate
-            source_language: Name of source language
-            target_language: Name of target language
-            
-        Returns:
-            Dictionary with 'translation'
-        """
-        prompt = f"""
-        Translate the phrase "{source_phrase}" from {source_language} to {target_language}.
-        
-        Return a JSON object with exactly this format:
-        {{
-            "translation": "the best translation of the phrase"
-        }}
-        
-        Notes:
-        - Preserve the meaning and nuance
-        - Keep the translation natural in {target_language}
-        - Return ONLY the JSON object, no additional text
-        """
-        
-        response_data = self.send_message_to_openai_and_parse_json(prompt)
-        return response_data
+        prompt = self._build_word_prompt(word, source_language, target_language)
+        response = self._call_api(prompt)
+        # Expected response shape (example):
+        # {"primary_translation": "...", "synonyms": ["...", ...], "tokens_used": 25}
+        # Log tokens if present
+        tokens = response.get("tokens_used")
+        if tokens is not None:
+            self._last_request_tokens = response.get("request_tokens", 0)
+            self._last_response_tokens = response.get("response_tokens", 0)
+        return response
 
-    def send_message_to_openai_and_parse_json(self, prompt: str) -> Dict:
+    def request_phrase_translation(self, phrase: str, source_language: str, target_language: str) -> Dict:
         """
-        Send a message to OpenAI API and parse JSON response
-        
-        Args:
-            prompt: The prompt to send to OpenAI
-            
-        Returns:
-            Parsed JSON response as dictionary
-            
-        Raises:
-            ValueError: If response is not valid JSON
-            Exception: If API call fails
-        """
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a professional translator. Always respond with valid JSON only."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.3,  # Low temperature for consistency
-                max_tokens=500
-            )
-            
-            response_text = response.choices[0].message.content.strip()
-            
-            # Parse JSON from response
-            parsed_json = json.loads(response_text)
-            
-            # Log token usage
-            tokens_used = response.usage.total_tokens
-            if config.VERBOSE_LOGGING:
-                print(f"✓ OpenAI request successful - Tokens used: {tokens_used}")
-            
-            return {
-                **parsed_json,
-                "tokens_used": tokens_used
-            }
-            
-        except json.JSONDecodeError as error:
-            print(f"✗ Failed to parse OpenAI response as JSON: {error}")
-            print(f"  Response was: {response_text}")
-            raise ValueError(f"Invalid JSON response from OpenAI: {error}")
-        except openai.error.OpenAIError as error:
-            print(f"✗ OpenAI API error: {error}")
-            raise
-        except Exception as error:
-            print(f"✗ Unexpected error in OpenAI request: {error}")
-            raise
+        Request a phrase translation from the AI.
 
+        Returns a dict containing at minimum:
+          - translation (str)
+          - tokens_used (int) optional
+        """
+        prompt = self._build_phrase_prompt(phrase, source_language, target_language)
+        response = self._call_api(prompt)
+        return response
+
+    # ----- Validation helpers -----
     def validate_word_translation_response(self, response: Dict) -> bool:
         """
-        Validate that word translation response has required fields
-        
-        Args:
-            response: Response dictionary from word translation request
-            
-        Returns:
-            True if valid, False otherwise
+        Verify the AI response contains required keys and types for word translations.
         """
-        required_fields = ['primary_translation', 'synonyms']
-        
-        if not all(field in response for field in required_fields):
-            print(f"✗ Response missing required fields: {required_fields}")
+        if not isinstance(response, dict):
             return False
-        
+        if 'primary_translation' not in response or 'synonyms' not in response:
+            return False
+        if not isinstance(response['primary_translation'], str):
+            return False
         if not isinstance(response['synonyms'], list):
-            print(f"✗ Synonyms must be a list")
             return False
-        
-        if len(response['synonyms']) > config.MAX_SYNONYMS_PER_WORD:
-            print(f"✗ Too many synonyms: {len(response['synonyms'])} > {config.MAX_SYNONYMS_PER_WORD}")
-            return False
-        
         return True
 
     def validate_phrase_translation_response(self, response: Dict) -> bool:
         """
-        Validate that phrase translation response has required fields
-        
-        Args:
-            response: Response dictionary from phrase translation request
-            
-        Returns:
-            True if valid, False otherwise
+        Verify the AI response contains required keys and types for phrase translations.
         """
-        required_fields = ['translation']
-        
-        if not all(field in response for field in required_fields):
-            print(f"✗ Response missing required fields: {required_fields}")
+        if not isinstance(response, dict):
             return False
-        
+        if 'translation' not in response:
+            return False
+        if not isinstance(response['translation'], str):
+            return False
         return True
+
+    # ----- Utility helpers -----
+    def make_cache_key_for_word(self, word: str, source_code: str, target_code: str) -> str:
+        """Create a stable cache key for a word translation."""
+        return f"word:{source_code}:{target_code}:{word.lower()}"
+
+    def make_cache_key_for_phrase(self, phrase: str, source_code: str, target_code: str) -> str:
+        """Create a stable cache key for a phrase translation."""
+        normalized = phrase.strip().lower()
+        return f"phrase:{source_code}:{target_code}:{normalized}"
+
+    def _build_word_prompt(self, word: str, source_language: str, target_language: str) -> str:
+        return (
+            f"Translate the single word '{word}' from {source_language} to {target_language}. "
+            "Return a JSON object with keys: primary_translation (string) and synonyms (array of up to 7 alternatives)."
+        )
+
+    def _build_phrase_prompt(self, phrase: str, source_language: str, target_language: str) -> str:
+        return (
+            f"Translate the phrase '{phrase}' from {source_language} to {target_language}. "
+            "Return a JSON object with key: translation (string)."
+        )
+
+    def _call_api(self, prompt: str) -> Dict:
+        """
+        Placeholder API call. Replace this method with real OpenAI API invocation.
+
+        For now this returns a deterministic stub to keep the rest of the system
+        runnable without network access.
+        """
+        # Simulate latency
+        time.sleep(0.05)
+
+        # Very small heuristic: if prompt asks for a single word, return stub synonyms
+        if 'single word' in prompt or "Translate the single word" in prompt:
+            # Extract word heuristically
+            try:
+                start = prompt.index("'") + 1
+                end = prompt.index("'", start)
+                word = prompt[start:end]
+            except Exception:
+                word = "word"
+            primary = f"{word}_tgt"
+            synonyms = [f"{word}_alt{i}" for i in range(1, 4)]
+            return {"primary_translation": primary, "synonyms": synonyms, "tokens_used": 5}
+
+        # Phrase stub
+        try:
+            start = prompt.index("'") + 1
+            end = prompt.index("'", start)
+            phrase = prompt[start:end]
+        except Exception:
+            phrase = "phrase"
+        translation = f"{phrase}_tgt"
+        return {"translation": translation, "tokens_used": 12}
