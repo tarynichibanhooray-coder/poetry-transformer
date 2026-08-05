@@ -66,6 +66,59 @@ Offline/Intermittent connectivity patterns
 Serving the static UI
 - `server.py` now mounts the `static/` directory and will serve `static/index.html` at `/` — you do not need an external static server when running `uvicorn server:app`.
 
+GPIO wiring and Raspberry Pi headless setup
+- Purpose: The Pi acts as a headless trigger source using a physical button. The web UI sends the same POST /trigger when the user presses Space; the server is the single authority.
+
+Hardware wiring (BCM numbering)
+- Default button pin: GPIO17 (BCM 17). Adjust BUTTON_PIN in the systemd unit or export BUTTON_PIN in the environment if you use a different pin.
+- Wiring with internal pull-up (recommended):
+  - Connect one leg of the momentary push-button to GPIO17.
+  - Connect the other leg to any GND pin on the Pi.
+  - When pressed, the GPIO pin is pulled to ground and the script (with pull_up=True) detects the press.
+
+Alternative wiring (external resistor / pull-down)
+- If you prefer an external pull-down resistor, wire the button between 3.3V and the GPIO pin and set pull_up=False in the script.
+
+Software and dependencies on the Pi
+1) Clone and create venv
+
+   cd /home/pi
+   git clone https://github.com/tarynichibanhooray-coder/poetry-transformer.git
+   cd poetry-transformer
+   python3 -m venv .venv
+   . .venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   pip install gpiozero
+
+2) Confirm GPIO script and service are present
+
+   ls -l pi_trigger_gpio.py systemd/pi-trigger-gpio.service
+
+Systemd unit installation (copy from repo)
+
+   sudo cp systemd/pi-trigger-gpio.service /etc/systemd/system/pi-trigger-gpio.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now pi-trigger-gpio
+   sudo systemctl status pi-trigger-gpio
+   sudo journalctl -u pi-trigger-gpio -f
+
+Service environment variables (edit with systemctl override)
+- To change the SERVER_URL, BUTTON_PIN, or PI_RETRY_INTERVAL use:
+
+  sudo systemctl edit --full pi-trigger-gpio
+  # edit Environment= lines or add new ones
+  sudo systemctl daemon-reload
+  sudo systemctl restart pi-trigger-gpio
+
+GPIO testing notes
+- Run the script manually while connected to a display or SSH with X11/TCP forwarded if you want to observe prints.
+- For headless testing, examine the journal logs above.
+
+Systemd & permissions
+- The service runs as user `pi` in the example. Ensure the `pi` user has access to the repo directory and GPIO (gpiozero typically works as pi user).
+- If you run as another user, ensure that user has access to GPIO (group gpio or run as root).
+
 Deploying to a simple host (Render / Railway / similar)
 - Push this repository to GitHub and connect your host (Render, Railway).
 - Set the start/launch command to:
@@ -77,9 +130,6 @@ Deploying to a simple host (Render / Railway / similar)
   uvicorn server:app --host 0.0.0.0 --port $PORT
 
 - If you enable API key protection later, add the API key as an environment variable on the host.
-
-Exposing a Pi to the internet (optional)
-- If you run the server on a Pi but need public access, use a tunnel service such as Cloudflare Tunnel or ngrok. This avoids opening ports on your router.
 
 Systemd unit example (Raspberry Pi)
 - Create `/etc/systemd/system/poetry-transformer.service` with:
@@ -119,9 +169,56 @@ Troubleshooting
   - Browser security: if connecting from a different origin to `ws://`/`wss://`, ensure CORS/WSS settings are correct.
   - Check server logs printed by `uvicorn`.
 
-If you want
-- I can implement API key enforcement and show an example of how to call `/trigger` with the header.
-- I can add a simple retry queue for `pi_trigger.py` so it buffers triggers while offline and retries when online.
-- I can add rate-limiting or basic auth for `/trigger`.
+GPIO test plan (end-to-end verification)
+This test plan verifies the full flow: button press on Pi → POST /trigger → server advances poem → Web UI updates. Run these steps while your server and web client are up.
 
-What should I do next?
+Prerequisites
+- Server running on `http://<server-host>:8000` (run locally or on Pi). The web UI should be reachable at that address.
+- Pi with `pi_trigger_gpio.py` installed and systemd service enabled (if using service mode).
+- A browser open to `http://<server-host>:8000/` with DevTools console available.
+
+Test steps
+1) Verify server health
+   curl http://<server-host>:8000/state
+   Expected: JSON with "current_state" and "stats" fields.
+
+2) Open web UI and confirm initial state
+   - Open http://<server-host>:8000/ in a browser.
+   - In the DevTools Console, ensure WebSocket connects (look for "Connected" in the page status).
+   - The poem area should show the current state from server (initial state).
+
+3) Trigger with web UI (Space)
+   - Press Space or click the Trigger button in the browser.
+   - Expected: The poem text updates immediately in the browser to a new state.
+   - Check server log: uvicorn should show an incoming POST /trigger.
+   - Check output file: tail -n 5 output/translation_stream.jsonl should show a new event.
+
+4) Trigger with Pi button
+   - Press the physical button wired to the Pi.
+   - Expected: The server receives POST /trigger (check server logs or tail the JSONL), and the poem in the browser updates if connected.
+   - Check Pi logs: sudo journalctl -u pi-trigger-gpio -f should show the attempt and either "Trigger sent successfully" or "Queued trigger for retry".
+
+5) Simulate server offline and verify queuing
+   - Stop the server temporarily: sudo systemctl stop poetry-transformer (or kill uvicorn).
+   - Press the Pi button multiple times.
+   - Expected: pi_queue.jsonl contains one line per press. On the Pi, cat pi_queue.jsonl should show JSON payloads.
+
+6) Restore server and verify flusher
+   - Start server: sudo systemctl start poetry-transformer
+   - Wait RETRY_INTERVAL seconds and watch the Pi journal; queued triggers should be flushed and removed from pi_queue.jsonl.
+   - Check server output JSONL to confirm events were processed.
+
+7) Verify rate limit handling
+   - Rapidly press the Pi button or call curl POST /trigger more than RATE_LIMIT_MAX_REQUESTS within RATE_LIMIT_WINDOW_SECONDS.
+   - Expected: Server returns HTTP 429 on some requests; Pi flusher logs the 429 and keeps those items for retry.
+
+8) Clean up
+   - Remove queue files if desired: rm pi_queue.jsonl
+   - Re-enable server and services as needed.
+
+If any step fails, collect these logs and share them:
+- Server logs: journalctl -u poetry-transformer (or uvicorn console output)
+- Pi service logs: journalctl -u pi-trigger-gpio
+- Contents of output/translation_stream.jsonl
+
+If you want, I’ll now commit this updated README to main. Reply exactly: Commit README GPIO & test plan to main
