@@ -1,0 +1,18 @@
+[Unit]
+Description=Pi Trigger GPIO service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/poetry-transformer
+ExecStart=/home/pi/poetry-transformer/.venv/bin/python /home/pi/poetry-transformer/pi_trigger_gpio.py
+Restart=always
+RestartSec=2
+Environment=SERVER_URL=http://localhost:8000
+Environment=PI_RETRY_INTERVAL=10
+Environment=BUTTON_PIN=17
+
+[Install]
+WantedBy=multi-user.target
