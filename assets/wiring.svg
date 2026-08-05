@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="520" height="220" viewBox="0 0 520 220" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .pin { font: 12px monospace; }
+    .label { font: 14px sans-serif; font-weight: bold; }
+    .header { fill: #f8f9fa; stroke: #333; stroke-width:1 }
+    .gpio { fill: #cfe2ff; }
+    .gnd { fill: #f8d7da; }
+    .pad { fill: #fff; stroke: #333; }
+  </style>
+
+  <rect x="10" y="10" width="500" height="200" rx="8" ry="8" class="header"/>
+  <text x="30" y="38" class="label">Raspberry Pi 40-pin header (top view)</text>
+
+  <!-- left column pins (1..20) -->
+  <g transform="translate(30,60)">
+    <!-- Draw 10 rows -->
+    <!-- Each row: two pads left and right -->
+    <!-- We'll mark pin numbers and BCM names -->
+    <!-- Row 1: pins 1 (3V3) and 2 (5V) -->
+    <!-- We'll highlight pin 11 (BCM17) and pin 6 (GND) -->
+    <!-- Generate rows -->
+    
+    <!-- Row 1 -->
+    <rect x="0" y="0" width="40" height="24" class="pad"/>
+    <rect x="100" y="0" width="40" height="24" class="pad"/>
+    <text x="8" y="16" class="pin">1</text>
+    <text x="108" y="16" class="pin">2</text>
+
+    <!-- Row 2 -->
+    <rect x="0" y="30" width="40" height="24" class="pad"/>
+    <rect x="100" y="30" width="40" height="24" class="pad"/>
+    <text x="8" y="46" class="pin">3</text>
+    <text x="108" y="46" class="pin">4</text>
+
+    <!-- Row 3 -->
+    <rect x="0" y="60" width="40" height="24" class="pad"/>
+    <rect x="100" y="60" width="40" height="24" class="pad"/>
+    <text x="8" y="76" class="pin">5</text>
+    <text x="108" y="76" class="pin">6</text>
+
+    <!-- Row 4 -->
+    <rect x="0" y="90" width="40" height="24" class="pad"/>
+    <rect x="100" y="90" width="40" height="24" class="pad"/>
+    <text x="8" y="106" class="pin">7</text>
+    <text x="108" y="106" class="pin">8</text>
+
+    <!-- Row 5 -->
+    <rect x="0" y="120" width="40" height="24" class="pad"/>
+    <rect x="100" y="120" width="40" height="24" class="pad"/>
+    <text x="8" y="136" class="pin">9</text>
+    <text x="108" y="136" class="pin">10</text>
+
+    <!-- Row 6 -->
+    <rect x="0" y="150" width="40" height="24" class="pad"/>
+    <rect x="100" y="150" width="40" height="24" class="pad"/>
+    <text x="8" y="166" class="pin">11</text>
+    <text x="108" y="166" class="pin">12</text>
+
+    <!-- Row 7 -->
+    <rect x="0" y="180" width="40" height="24" class="pad"/>
+    <rect x="100" y="180" width="40" height="24" class="pad"/>
+    <text x="8" y="196" class="pin">13</text>
+    <text x="108" y="196" class="pin">14</text>
+  </g>
+
+  <!-- Right column labels mapping to BCM and function -->
+  <g transform="translate(180,60)">
+    <text x="0" y="16" class="pin">Pin 1: 3V3</text>
+    <text x="0" y="46" class="pin">Pin 2: 5V</text>
+    <text x="0" y="76" class="pin">Pin 3: SDA1 (BCM2)</text>
+    <text x="0" y="106" class="pin">Pin 4: 5V</text>
+    <text x="0" y="136" class="pin">Pin 5: SCL1 (BCM3)</text>
+    <text x="0" y="166" class="pin">Pin 6: GND</text>
+    <text x="0" y="196" class="pin">Pin 11: GPIO17 (BCM17)</text>
+  </g>
+
+  <!-- Highlight BCM17 and GND -->
+  <!-- GND pin 6: position corresponds to row 3 right pad -> coordinates -->
+  <rect x="30" y="118" width="40" height="24" class="gnd" stroke="#333" />
+  <text x="34" y="137" class="pin">GND (pin 6)</text>
+
+  <!-- BCM17 pin 11: left column row 6 pad -->
+  <rect x="30" y="168" width="40" height="24" class="gpio" stroke="#333" />
+  <text x="34" y="187" class="pin">GPIO17 (pin 11)</text>
+
+  <g transform="translate(350,120)">
+    <rect x="0" y="0" width="140" height="72" rx="6" ry="6" fill="#fff" stroke="#333"/>
+    <text x="8" y="18" class="label">Wiring</text>
+    <text x="8" y="36" class="pin">GPIO17 (BCM 17) --&gt; one button leg</text>
+    <text x="8" y="54" class="pin">Other button leg --&gt; GND</text>
+  </g>
+
+</svg>
