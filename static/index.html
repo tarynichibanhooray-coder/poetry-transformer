@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Poetry Transformer — Live</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; }
+    pre { background:#f7f7f7; padding:1rem; border-radius:6px; white-space:pre-wrap; }
+    #status { margin-bottom:1rem; }
+    button { padding:0.5rem 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Poetry Transformer — Live</h1>
+  <div id="status">Connecting...</div>
+  <div>
+    <button id="trigger">Trigger (Space)</button>
+    <button id="load-sample">Load Sample Poem</button>
+  </div>
+  <h2>Current Poem</h2>
+  <pre id="poem">(empty)</pre>
+  <script>
+    const statusEl = document.getElementById('status');
+    const poemEl = document.getElementById('poem');
+    const triggerBtn = document.getElementById('trigger');
+    const loadBtn = document.getElementById('load-sample');
+
+    const base = window.location.origin;
+    const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
+    const ws = new WebSocket(wsProto + '://' + location.host + '/ws');
+
+    ws.onopen = () => { statusEl.textContent = 'Connected'; };
+    ws.onclose = () => { statusEl.textContent = 'Disconnected'; };
+    ws.onerror = (e) => { statusEl.textContent = 'WebSocket error'; console.error(e); };
+
+    ws.onmessage = (evt) => {
+      try {
+        const event = JSON.parse(evt.data);
+        if (event && event.new_state !== undefined) {
+          poemEl.textContent = event.new_state;
+        }
+      } catch (err) { console.error('Invalid event', err); }
+    };
+
+    async function sendTrigger() {
+      try {
+        await fetch(base + '/trigger', { method: 'POST' });
+      } catch (err) { console.error('Trigger failed', err); }
+    }
+
+    triggerBtn.addEventListener('click', sendTrigger);
+
+    // Spacebar handling
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        sendTrigger();
+      }
+    });
+
+    loadBtn.addEventListener('click', async () => {
+      const sample = `Two roads diverged in a yellow wood`;
+      await fetch(base + '/load_poem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ poem: sample })
+      });
+    });
+  </script>
+</body>
+</html>
