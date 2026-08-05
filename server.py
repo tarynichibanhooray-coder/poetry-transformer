@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 import asyncio
 import json
 import os
@@ -48,6 +49,10 @@ class ConnectionManager:
 
 
 app = FastAPI()
+
+# Serve static files from the `static/` directory and return index.html at '/'
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
