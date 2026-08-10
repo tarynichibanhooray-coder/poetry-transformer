@@ -9,6 +9,10 @@
     pre { background:#f7f7f7; padding:1rem; border-radius:6px; white-space:pre-wrap; }
     #status { margin-bottom:1rem; }
     button { padding:0.5rem 1rem; }
+
+    /* Per-word spans and cycling highlight */
+    .word { display: inline-block; padding: 0 2px; }
+    .cycling { background: #fff3a7; border-radius: 3px; transition: background 0.2s ease; }
   </style>
 </head>
 <body>
@@ -34,12 +38,49 @@
     ws.onclose = () => { statusEl.textContent = 'Disconnected'; };
     ws.onerror = (e) => { statusEl.textContent = 'WebSocket error'; console.error(e); };
 
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function renderState(stateText, highlightIndex = null) {
+      // Split into words (simple split on whitespace). Preserve at least one space between words.
+      const words = stateText ? stateText.split(/\s+/) : [];
+      const nodes = words.map((w, i) => {
+        const span = `<span class="word" data-index="${i}">${escapeHtml(w)}</span>`;
+        return span;
+      });
+      poemEl.innerHTML = nodes.join(' ');
+      // Apply highlight if requested
+      if (highlightIndex !== null && Number.isFinite(highlightIndex)) {
+        const el = poemEl.querySelector(`.word[data-index="${highlightIndex}"]`);
+        if (el) {
+          el.classList.add('cycling');
+          // remove cycling class after a short time in case final event gets lost
+          // we won't remove here; final event will render full state without highlight
+        }
+      } else {
+        // ensure no cycling classes remain
+        poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
+      }
+    }
+
     ws.onmessage = (evt) => {
       try {
         const event = JSON.parse(evt.data);
-        if (event && event.new_state !== undefined) {
-          poemEl.textContent = event.new_state;
+        if (!event) return;
+
+        // Intermediate synonym cycle events have `intermediate: true` and a context_snapshot.word_index
+        if (event.intermediate && event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
+          const idx = event.context_snapshot.word_index;
+          renderState(event.new_state, idx);
+          return;
         }
+
+        // Normal events: render final state and clear highlights
+        if (event.new_state !== undefined) {
+          renderState(event.new_state, null);
+        }
+
       } catch (err) { console.error('Invalid event', err); }
     };
 
