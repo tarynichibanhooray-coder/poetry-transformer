@@ -12,7 +12,26 @@
 
     /* Per-word spans and cycling highlight */
     .word { display: inline-block; padding: 0 2px; }
-    .cycling { background: #fff3a7; border-radius: 3px; transition: background 0.2s ease; }
+
+    /* Pulsing highlight */
+    .cycling { background: #fff3a7; border-radius: 3px; animation: pulse 1.2s infinite ease-in-out; }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255,243,167,0.95); }
+      40% { box-shadow: 0 0 10px 6px rgba(255,243,167,0.35); }
+      100% { box-shadow: 0 0 0 0 rgba(255,243,167,0); }
+    }
+
+    /* Screen-reader only element */
+    .sr-only {
+      position: absolute !important;
+      height: 1px; width: 1px;
+      overflow: hidden;
+      clip: rect(1px, 1px, 1px, 1px);
+      white-space: nowrap; /* added line */
+      border: 0;
+      padding: 0;
+      margin: -1px;
+    }
   </style>
 </head>
 <body>
@@ -24,11 +43,16 @@
   </div>
   <h2>Current Poem</h2>
   <pre id="poem">(empty)</pre>
+
+  <!-- Live region for screen readers: will announce cycling/snapshots -->
+  <div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
   <script>
     const statusEl = document.getElementById('status');
     const poemEl = document.getElementById('poem');
     const triggerBtn = document.getElementById('trigger');
     const loadBtn = document.getElementById('load-sample');
+    const srLive = document.getElementById('sr-live');
 
     const base = window.location.origin;
     const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
@@ -39,10 +63,10 @@
     ws.onerror = (e) => { statusEl.textContent = 'WebSocket error'; console.error(e); };
 
     function escapeHtml(s) {
-      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
-    function renderState(stateText, highlightIndex = null) {
+    function renderState(stateText, highlightIndex = null, srAnnouncement = null) {
       // Split into words (simple split on whitespace). Preserve at least one space between words.
       const words = stateText ? stateText.split(/\s+/) : [];
       const nodes = words.map((w, i) => {
@@ -55,12 +79,17 @@
         const el = poemEl.querySelector(`.word[data-index="${highlightIndex}"]`);
         if (el) {
           el.classList.add('cycling');
-          // remove cycling class after a short time in case final event gets lost
-          // we won't remove here; final event will render full state without highlight
         }
       } else {
         // ensure no cycling classes remain
         poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
+      }
+
+      // Announce for screen readers if requested
+      if (srAnnouncement) {
+        // Small delay to ensure polite announcements are picked up
+        srLive.textContent = '';
+        setTimeout(() => { srLive.textContent = srAnnouncement; }, 50);
       }
     }
 
@@ -72,13 +101,26 @@
         // Intermediate synonym cycle events have `intermediate: true` and a context_snapshot.word_index
         if (event.intermediate && event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
           const idx = event.context_snapshot.word_index;
-          renderState(event.new_state, idx);
+          // Extract the cycling word from the new_state (it contains the current synonym at that index)
+          const newWords = (event.new_state || '').split(/\s+/);
+          const currentWord = newWords[idx] || '';
+          const sr = `Cycling word ${idx + 1}: ${currentWord}`;
+          renderState(event.new_state, idx, sr);
           return;
         }
 
-        // Normal events: render final state and clear highlights
+        // Normal final events: if we have a word index in context_snapshot, announce settled word
         if (event.new_state !== undefined) {
-          renderState(event.new_state, null);
+          let sr = null;
+          if (event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
+            const idx = event.context_snapshot.word_index;
+            const newWords = (event.new_state || '').split(/\s+/);
+            const finalWord = newWords[idx] || '';
+            sr = `Word ${idx + 1} settled to ${finalWord}`;
+          } else {
+            sr = 'Poem updated.';
+          }
+          renderState(event.new_state, null, sr);
         }
 
       } catch (err) { console.error('Invalid event', err); }
