@@ -2,11 +2,47 @@
 .env
 .venv/
 venv/
+
+# Python cache and compiles
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+
+# Project specific
 poetry_transformer.db
 output/
+
+# Editor/IDE
 .idea/
 .vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment local override files
+.env.local
+.env.*.local
+
+# Node
+node_modules/
+
+# Compiled extensions
+*.so
