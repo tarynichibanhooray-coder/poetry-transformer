@@ -42,5 +42,5 @@ if [ -z "${OPENAI_API_KEY:-}" ]; then
 fi
 
 echo "5/5 — Starting uvicorn server (Ctrl-C to stop)..."
-# Activate venv and exec uvicorn so it replaces the shell process
-exec . .venv/bin/activate && .venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+# Start uvicorn using the venv binary so we don't rely on shell builtins in exec
+exec .venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --reload
