@@ -29,11 +29,32 @@ class DatabaseManager:
         self.create_all_required_tables()
 
     def initialize_database_connection(self) -> None:
-        """Establish connection to SQLite database"""
+        """Establish connection to SQLite database and configure pragmas"""
         try:
-            self.connection = sqlite3.connect(str(self.database_path))
+            # Use a connection that is safe for use across threads in this process
+            # and enable reasonable pragmas for concurrency (WAL) and durability.
+            # We set a timeout so transient locks retry for a short time.
+            self.connection = sqlite3.connect(
+                str(self.database_path),
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=False,
+                timeout=30.0,
+            )
             self.connection.row_factory = sqlite3.Row
             self.cursor = self.connection.cursor()
+
+            # Enable WAL and other pragmatic settings to reduce reader/writer contention.
+            try:
+                self.cursor.execute("PRAGMA journal_mode=WAL;")
+                self.cursor.execute("PRAGMA synchronous=NORMAL;")
+                # Set an automatic checkpoint interval (in pages). Tune if needed.
+                self.cursor.execute("PRAGMA wal_autocheckpoint=100;")
+                if config.DEBUG_MODE:
+                    print("✓ Enabled WAL journal_mode and pragmas for SQLite")
+            except Exception as e:
+                # Non-fatal: if the platform doesn't support WAL (network FS) we'll continue
+                print(f"✗ Warning: failed to set WAL pragmas: {e}")
+
             if config.DEBUG_MODE:
                 print(f"✓ Database connection established: {self.database_path}")
         except sqlite3.Error as error:
@@ -45,6 +66,8 @@ class DatabaseManager:
         self.create_word_cache_table()
         self.create_phrase_cache_table()
         self.create_translation_history_table()
+        # Create poems table for persisted poem management (added here to ensure schema exists)
+        self.create_poems_table()
         self.commit_database_changes()
 
     def create_word_cache_table(self) -> None:
@@ -129,6 +152,25 @@ class DatabaseManager:
             source_language TEXT NOT NULL,
             target_language TEXT NOT NULL,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        self.cursor.execute(create_table_sql)
+
+    def create_poems_table(self) -> None:
+        """Create table for storing uploaded poems and metadata"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS poems (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            source_language TEXT,
+            source_language_code TEXT,
+            target_language TEXT,
+            target_language_code TEXT,
+            raw_text TEXT NOT NULL,
+            lines_json TEXT,
+            stanza_delimiter TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
         self.cursor.execute(create_table_sql)

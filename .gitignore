@@ -1,0 +1,12 @@
+# Ignore local environment files and virtual environments
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+poetry_transformer.db
+output/
+.idea/
+.vscode/
