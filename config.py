@@ -5,12 +5,38 @@ Configuration settings for Poetry Transformer
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).parent
+
+# Load .env here rather than in a launcher script so every entry point behaves
+# the same. Real environment variables win over the file, letting systemd or CI
+# override it.
+load_dotenv(BASE_DIR / ".env")
+
 # ============================================================================
 # API CONFIGURATION
 # ============================================================================
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-api-key-here")
-OPENAI_MODEL = "gpt-4o"  # or "gpt-3.5-turbo" for cost efficiency
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")  # or "gpt-3.5-turbo" for cost efficiency
+
+
+def validate_required_settings() -> None:
+    """
+    Check that required configuration is present
+
+    Called at process start so a missing key fails immediately with a clear
+    message, rather than surfacing later as an opaque 401 from OpenAI on the
+    first translation.
+
+    Raises:
+        RuntimeError: If a required setting is missing
+    """
+    if not OPENAI_API_KEY:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not set. Copy .env.example to .env and add your key."
+        )
 
 # ============================================================================
 # LANGUAGE CONFIGURATION
@@ -53,13 +79,13 @@ SUPPORTED_TARGET_LANGUAGES = [
 # ============================================================================
 
 # Fallback used only when no poem has been saved through the web UI
-POEM_FILE_PATH = Path(__file__).parent / "poem.txt"
+POEM_FILE_PATH = BASE_DIR / "poem.txt"
 
 # ============================================================================
 # DATABASE CONFIGURATION
 # ============================================================================
 
-DATABASE_FILE_PATH = Path(__file__).parent / "poetry_transformer.db"
+DATABASE_FILE_PATH = BASE_DIR / "poetry_transformer.db"
 DATABASE_ENABLE_LOGGING = False  # Set to True for debugging
 
 # Output database for detailed translation events (same DB used by manager)
@@ -90,10 +116,10 @@ MAX_SYNONYMS_PER_WORD = 7
 DISPLAY_OUTPUT_MODE = "console"
 
 # File path for file output mode
-DISPLAY_OUTPUT_FILE_PATH = Path(__file__).parent / "output" / "transformed_poem.txt"
+DISPLAY_OUTPUT_FILE_PATH = BASE_DIR / "output" / "transformed_poem.txt"
 
 # Streaming JSONL output for animation / installation
-STREAM_OUTPUT_JSONL_PATH = Path(__file__).parent / "output" / "translation_stream.jsonl"
+STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 
 # ============================================================================
 # TRANSFORMATION PHASE CONFIGURATION
