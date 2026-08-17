@@ -5,11 +5,14 @@ This repository includes a small FastAPI server that runs the PoemTransformer en
 Files of interest
 - `server.py` — FastAPI server with endpoints:
   - `POST /trigger` — advance the transformation by one step
-  - `POST /load_poem` — load poem text (JSON payload: {"poem": "text"})
-  - `GET /state` — current poem state and stats
+  - `POST /load_poem` — load and save a poem (JSON payload: `{"poem": "text", "title": "optional", "source_language_code": "es"}`)
+  - `GET /state` — current poem state, stats, and active language pair
+  - `GET /languages` — source and target languages the app accepts
+  - `GET /poems` — previously saved poems, newest first
   - `WebSocket /ws` — real-time event stream (initial state + subsequent events)
   - Also serves the static UI at `/` from `static/index.html`.
 - `static/index.html` — tiny web UI that connects to `/ws` and POSTs `/trigger` on Space.
+- `static/add.html` — form for adding a poem, with `/`-separated lines and an original-language picker.
 - `pi_trigger.py` — simple Raspberry Pi client that POSTs `/trigger` when Space (or a button) is pressed.
 - `run_local.sh` — single-command local runner (creates venv, installs dependencies, runs uvicorn).
 - `requirements.txt` — Python dependencies. (Updated to include `openai`.)
@@ -32,6 +35,13 @@ Quick start — run locally (recommended)
 
    - The page will open a WebSocket to `ws://localhost:8000/ws` and show the current poem state.
    - Press Space (or click the "Trigger" button) to advance the poem. Each trigger is broadcast to all connected clients and appended to `output/translation_stream.jsonl`.
+
+Adding poems
+- Open http://localhost:8000/add.html (linked from the live view).
+- Paste the poem using `/` to separate lines and `//` for a blank line between stanzas. Poems pasted with real line breaks work too.
+- Pick the poem's original language. This is stored per poem, feeds the OpenAI prompt, and keys the translation cache, so poems in different languages never share cached words.
+- The list of selectable languages comes from `SUPPORTED_SOURCE_LANGUAGES` in `config.py`, served to the page via `GET /languages`. Add a `{"name": ..., "code": ...}` entry there to offer another language.
+- Poems are saved to the `poems` table. Re-saving the same text and language pair updates the existing row instead of creating a duplicate.
 
 Environment variables and .env (new)
 - Create a `.env` file at the repository root (do NOT commit it). Use the provided `.env.example` as a starting point.

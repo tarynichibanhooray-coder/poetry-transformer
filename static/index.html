@@ -10,6 +10,8 @@
     #status { margin-bottom:1rem; }
     button { padding:0.5rem 1rem; }
 
+    .languages { font-size: 0.9rem; font-weight: normal; color: #555; }
+
     /* Per-word spans and cycling highlight */
     .word { display: inline-block; padding: 0 2px; }
 
@@ -40,8 +42,9 @@
   <div>
     <button id="trigger">Trigger (Space)</button>
     <button id="load-sample">Load Sample Poem</button>
+    <a href="/add.html">Add a poem &rarr;</a>
   </div>
-  <h2>Current Poem</h2>
+  <h2>Current Poem <span id="languages" class="languages"></span></h2>
   <pre id="poem">(empty)</pre>
 
   <!-- Live region for screen readers: will announce cycling/snapshots -->
@@ -66,14 +69,30 @@
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
+    const languagesEl = document.getElementById('languages');
+
+    function updateLanguages(snapshot) {
+      if (!snapshot || !snapshot.source_language) return;
+      languagesEl.textContent = `${snapshot.source_language} → ${snapshot.target_language}`;
+    }
+
+    // Matches the engine's word indexing, which ignores empty tokens.
+    function splitWords(stateText) {
+      return (stateText || '').split(/\s+/).filter(Boolean);
+    }
+
     function renderState(stateText, highlightIndex = null, srAnnouncement = null) {
-      // Split into words (simple split on whitespace). Preserve at least one space between words.
-      const words = stateText ? stateText.split(/\s+/) : [];
-      const nodes = words.map((w, i) => {
-        const span = `<span class="word" data-index="${i}">${escapeHtml(w)}</span>`;
-        return span;
+      // Render line by line so the poem's line breaks survive, while keeping a
+      // running word index that matches the engine's.
+      let wordIndex = 0;
+      const lines = (stateText || '').split('\n').map(line => {
+        return line.split(/\s+/).filter(Boolean).map(word => {
+          const span = `<span class="word" data-index="${wordIndex}">${escapeHtml(word)}</span>`;
+          wordIndex += 1;
+          return span;
+        }).join(' ');
       });
-      poemEl.innerHTML = nodes.join(' ');
+      poemEl.innerHTML = lines.join('\n');
       // Apply highlight if requested
       if (highlightIndex !== null && Number.isFinite(highlightIndex)) {
         const el = poemEl.querySelector(`.word[data-index="${highlightIndex}"]`);
@@ -98,11 +117,13 @@
         const event = JSON.parse(evt.data);
         if (!event) return;
 
+        updateLanguages(event.context_snapshot);
+
         // Intermediate synonym cycle events have `intermediate: true` and a context_snapshot.word_index
         if (event.intermediate && event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
           const idx = event.context_snapshot.word_index;
           // Extract the cycling word from the new_state (it contains the current synonym at that index)
-          const newWords = (event.new_state || '').split(/\s+/);
+          const newWords = splitWords(event.new_state);
           const currentWord = newWords[idx] || '';
           const sr = `Cycling word ${idx + 1}: ${currentWord}`;
           renderState(event.new_state, idx, sr);
@@ -114,7 +135,7 @@
           let sr = null;
           if (event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
             const idx = event.context_snapshot.word_index;
-            const newWords = (event.new_state || '').split(/\s+/);
+            const newWords = splitWords(event.new_state);
             const finalWord = newWords[idx] || '';
             sr = `Word ${idx + 1} settled to ${finalWord}`;
           } else {
@@ -143,11 +164,15 @@
     });
 
     loadBtn.addEventListener('click', async () => {
-      const sample = `Two roads diverged in a yellow wood`;
+      const sample = `Dos caminos se bifurcaban\nen un bosque amarillo`;
       await fetch(base + '/load_poem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ poem: sample })
+        body: JSON.stringify({
+          poem: sample,
+          title: 'Sample',
+          source_language_code: 'es'
+        })
       });
     });
   </script>

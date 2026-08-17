@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Poetry Transformer — Add a Poem</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; max-width: 52rem; }
+    pre { background:#f7f7f7; padding:1rem; border-radius:6px; white-space:pre-wrap; }
+    button { padding:0.5rem 1rem; }
+    textarea {
+      width: 100%;
+      min-height: 8rem;
+      padding: 0.75rem;
+      font-family: inherit;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+    .hint { color:#555; font-size:0.9rem; }
+    .hint code { background:#f0f0f0; padding:0 3px; border-radius:3px; }
+    .actions { display:flex; gap:0.5rem; align-items:center; margin:1rem 0; }
+    .meta { color:#555; font-size:0.9rem; }
+    #status { min-height:1.4rem; margin-top:0.5rem; }
+    .ok { color:#0a7d28; }
+    .err { color:#b00020; }
+    .empty-line { color:#999; font-style:italic; }
+    nav { margin-bottom:1.5rem; }
+    .field { margin-bottom:1rem; }
+    .field label { display:block; margin-bottom:0.25rem; }
+    input[type="text"], select {
+      padding: 0.5rem;
+      font-family: inherit;
+      font-size: 1rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      background: #fff;
+    }
+    input[type="text"] { width: 100%; box-sizing: border-box; }
+    .arrow { margin: 0 0.5rem; color:#555; }
+  </style>
+</head>
+<body>
+  <nav><a href="/">&larr; Back to live view</a></nav>
+
+  <h1>Add a Poem</h1>
+
+  <p class="hint">
+    Paste your poem below using <code>/</code> to separate lines. Use <code>//</code>
+    for a blank line between stanzas. Real line breaks work too, so a poem pasted
+    normally is accepted as-is.
+  </p>
+
+  <div class="field">
+    <label for="title-input"><strong>Title</strong> <span class="hint">(optional)</span></label>
+    <input type="text" id="title-input" placeholder="El camino no elegido">
+  </div>
+
+  <div class="field">
+    <label for="source-language"><strong>Original language</strong></label>
+    <select id="source-language"></select>
+    <span class="arrow">&rarr;</span>
+    <span id="target-language" class="meta"></span>
+  </div>
+
+  <div class="field">
+    <label for="poem-input"><strong>Poem</strong></label>
+    <textarea id="poem-input" placeholder="Dos caminos se bifurcaban / en un bosque amarillo // Y apenado por no poder tomar los dos"></textarea>
+  </div>
+
+  <div class="actions">
+    <button id="load">Load Poem</button>
+    <button id="clear">Clear</button>
+    <span id="meta" class="meta"></span>
+  </div>
+
+  <div id="status" aria-live="polite"></div>
+
+  <h2>Preview</h2>
+  <pre id="preview">(nothing to preview yet)</pre>
+
+  <script>
+    const inputEl = document.getElementById('poem-input');
+    const titleEl = document.getElementById('title-input');
+    const sourceEl = document.getElementById('source-language');
+    const targetEl = document.getElementById('target-language');
+    const previewEl = document.getElementById('preview');
+    const metaEl = document.getElementById('meta');
+    const statusEl = document.getElementById('status');
+    const loadBtn = document.getElementById('load');
+    const clearBtn = document.getElementById('clear');
+
+    const base = window.location.origin;
+    const STANZA_DELIMITER = '/';
+
+    // The language list lives in config.py and is served by /languages so the
+    // page can't drift out of sync with the codes the backend accepts.
+    let targetLanguageCode = null;
+
+    async function loadLanguages() {
+      try {
+        const response = await fetch(base + '/languages');
+        const data = await response.json();
+
+        for (const language of data.source_languages) {
+          const option = document.createElement('option');
+          option.value = language.code;
+          option.textContent = language.name;
+          option.selected = language.code === data.default_source_code;
+          sourceEl.appendChild(option);
+        }
+
+        const target = data.target_languages.find(l => l.code === data.default_target_code)
+          || data.target_languages[0];
+        targetLanguageCode = target ? target.code : null;
+        targetEl.textContent = target ? target.name : 'unknown';
+      } catch (err) {
+        targetEl.textContent = 'unavailable';
+        setStatus('Could not load the language list: ' + err.message, 'err');
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Treat both "/" and real newlines as line breaks. An empty segment (from "//")
+    // becomes a blank line, but runs at the very start or end are discarded.
+    function parseLines(raw) {
+      const lines = raw.split(/[\/\n]/).map(line => line.trim());
+      while (lines.length && lines[0] === '') lines.shift();
+      while (lines.length && lines[lines.length - 1] === '') lines.pop();
+      return lines;
+    }
+
+    function toPoemText(raw) {
+      return parseLines(raw).join('\n');
+    }
+
+    function updatePreview() {
+      const lines = parseLines(inputEl.value);
+
+      if (!lines.length) {
+        previewEl.textContent = '(nothing to preview yet)';
+        metaEl.textContent = '';
+        return;
+      }
+
+      previewEl.innerHTML = lines
+        .map(line => line === ''
+          ? '<span class="empty-line">(blank line)</span>'
+          : escapeHtml(line))
+        .join('\n');
+
+      const wordCount = lines.join(' ').split(/\s+/).filter(Boolean).length;
+      const lineCount = lines.filter(line => line !== '').length;
+      metaEl.textContent = `${lineCount} line${lineCount === 1 ? '' : 's'}, ${wordCount} word${wordCount === 1 ? '' : 's'}`;
+    }
+
+    function setStatus(message, className) {
+      statusEl.textContent = message;
+      statusEl.className = className || '';
+    }
+
+    inputEl.addEventListener('input', () => {
+      updatePreview();
+      setStatus('');
+    });
+
+    clearBtn.addEventListener('click', () => {
+      inputEl.value = '';
+      titleEl.value = '';
+      updatePreview();
+      setStatus('');
+      inputEl.focus();
+    });
+
+    loadBtn.addEventListener('click', async () => {
+      const poem = toPoemText(inputEl.value);
+
+      if (!poem) {
+        setStatus('Enter a poem first.', 'err');
+        return;
+      }
+
+      loadBtn.disabled = true;
+      setStatus('Loading…');
+
+      try {
+        const response = await fetch(base + '/load_poem', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            poem,
+            title: titleEl.value.trim() || null,
+            source_language_code: sourceEl.value || null,
+            target_language_code: targetLanguageCode,
+            stanza_delimiter: STANZA_DELIMITER
+          })
+        });
+        const result = await response.json();
+
+        if (!response.ok) {
+          setStatus('Failed to load poem: ' + (result.detail || response.status), 'err');
+        } else {
+          const wordCount = poem.split(/\s+/).filter(Boolean).length;
+          statusEl.innerHTML = `Saved as poem #${result.poem_id} and loaded `
+            + `${wordCount} words (${result.source_language} &rarr; ${result.target_language}). `
+            + `<a href="/">Open the live view</a> to start triggering.`;
+          statusEl.className = 'ok';
+        }
+      } catch (err) {
+        setStatus('Failed to reach the server: ' + err.message, 'err');
+      } finally {
+        loadBtn.disabled = false;
+      }
+    });
+
+    updatePreview();
+    loadLanguages();
+  </script>
+</body>
+</html>

@@ -22,6 +22,32 @@ SOURCE_LANGUAGE_CODE = "es"
 TARGET_LANGUAGE = "English"
 TARGET_LANGUAGE_CODE = "en"
 
+# Languages offered when adding a poem. The name is what goes into the OpenAI
+# prompt and the code is what keys the translation cache, so a name and code
+# must always travel together as a pair.
+SUPPORTED_SOURCE_LANGUAGES = [
+    {"name": "Spanish", "code": "es"},
+    {"name": "French", "code": "fr"},
+    {"name": "Italian", "code": "it"},
+    {"name": "Portuguese", "code": "pt"},
+    {"name": "Catalan", "code": "ca"},
+    {"name": "German", "code": "de"},
+    {"name": "Dutch", "code": "nl"},
+    {"name": "Latin", "code": "la"},
+    {"name": "Ancient Greek", "code": "grc"},
+    {"name": "Russian", "code": "ru"},
+    {"name": "Arabic", "code": "ar"},
+    {"name": "Japanese", "code": "ja"},
+    {"name": "Chinese", "code": "zh"},
+    {"name": "English", "code": "en"},
+]
+
+# Only one target today, but kept as a list so additional targets can be added
+# without reshaping the API, the poems table, or the UI.
+SUPPORTED_TARGET_LANGUAGES = [
+    {"name": "English", "code": "en"},
+]
+
 # ============================================================================
 # POEM CONFIGURATION
 # ============================================================================
