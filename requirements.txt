@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
 requests
-openai
+# openai_translator.py uses the 1.0+ client API, which is incompatible with 0.x
+openai>=1.0
 python-dotenv

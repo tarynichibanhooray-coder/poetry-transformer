@@ -5,7 +5,7 @@ Handles all AI translation requests with structured JSON output
 
 import json
 from typing import List, Dict, Optional
-import openai
+from openai import OpenAI, OpenAIError
 
 import config
 
@@ -21,7 +21,7 @@ class OpenAITranslator:
             api_key: OpenAI API key (defaults to config)
         """
         self.api_key = api_key or config.OPENAI_API_KEY
-        openai.api_key = self.api_key
+        self.client = OpenAI(api_key=self.api_key)
         self.model = config.OPENAI_MODEL
         if config.DEBUG_MODE:
             print(f"✓ OpenAI Translator initialized with model: {self.model}")
@@ -110,10 +110,12 @@ class OpenAITranslator:
             
         Raises:
             ValueError: If response is not valid JSON
-            Exception: If API call fails
+            OpenAIError: If the API call fails
         """
+        response_text = None
+
         try:
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {
@@ -126,29 +128,29 @@ class OpenAITranslator:
                     }
                 ],
                 temperature=0.3,  # Low temperature for consistency
-                max_tokens=500
+                max_tokens=500,
+                # JSON mode: the model can only emit syntactically valid JSON,
+                # so parsing can't fail on prose wrapped around the object.
+                response_format={"type": "json_object"}
             )
-            
+
             response_text = response.choices[0].message.content.strip()
-            
-            # Parse JSON from response
             parsed_json = json.loads(response_text)
-            
-            # Log token usage
+
             tokens_used = response.usage.total_tokens
             if config.VERBOSE_LOGGING:
                 print(f"✓ OpenAI request successful - Tokens used: {tokens_used}")
-            
+
             return {
                 **parsed_json,
                 "tokens_used": tokens_used
             }
-            
+
         except json.JSONDecodeError as error:
             print(f"✗ Failed to parse OpenAI response as JSON: {error}")
             print(f"  Response was: {response_text}")
             raise ValueError(f"Invalid JSON response from OpenAI: {error}")
-        except openai.error.OpenAIError as error:
+        except OpenAIError as error:
             print(f"✗ OpenAI API error: {error}")
             raise
         except Exception as error:
