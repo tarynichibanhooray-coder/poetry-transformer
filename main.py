@@ -48,15 +48,38 @@ class PoetryTransformerApplication:
             raise
 
     def load_poem_and_initialize_transformer(self) -> None:
-        """Load poem file and initialize transformer"""
+        """
+        Load the most recently saved poem, falling back to the poem file
+
+        Poems added through the web UI are stored with the language they were
+        written in, so the database is the better source. The file is kept as a
+        fallback for a fresh install with nothing saved yet.
+        """
+        saved_poems = self.database_manager.retrieve_all_poem_entries()
+
+        if saved_poems:
+            poem = saved_poems[0]
+            self.transformer_engine.initialize_poem_with_text(
+                poem['raw_text'],
+                source_language=poem['source_language'],
+                source_language_code=poem['source_language_code'],
+                target_language=poem['target_language'],
+                target_language_code=poem['target_language_code']
+            )
+            poem_label = poem['title'] or f"untitled #{poem['id']}"
+            print(f"✓ Poem loaded from database: {poem_label}")
+            return
+
         poem_path = config.POEM_FILE_PATH
-        
+
         if not poem_path.exists():
-            print(f"✗ Poem file not found: {poem_path}")
-            raise FileNotFoundError(f"Poem file not found: {poem_path}")
-        
+            raise FileNotFoundError(
+                f"No saved poems and no poem file at {poem_path}. "
+                f"Add a poem at /add.html or create that file."
+            )
+
         self.transformer_engine.load_poem_from_file(str(poem_path))
-        print(f"✓ Poem loaded: {poem_path}")
+        print(f"✓ Poem loaded from file: {poem_path}")
 
     def setup_motion_sensor_with_trigger_callback(self) -> None:
         """Set up motion sensor with transformation callback"""
@@ -99,8 +122,8 @@ class PoetryTransformerApplication:
         """Print startup summary information"""
         print("\n" + "-"*80)
         print("TRANSFORMATION CONFIGURATION:")
-        print(f"  Source Language: {config.SOURCE_LANGUAGE}")
-        print(f"  Target Language: {config.TARGET_LANGUAGE}")
+        print(f"  Source Language: {self.transformer_engine.source_language}")
+        print(f"  Target Language: {self.transformer_engine.target_language}")
         print(f"  Output Mode: {config.DISPLAY_OUTPUT_MODE}")
         print(f"  Poem Words: {len(self.transformer_engine.original_poem_words)}")
         print("-"*80 + "\n")

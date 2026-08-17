@@ -52,7 +52,8 @@ SUPPORTED_TARGET_LANGUAGES = [
 # POEM CONFIGURATION
 # ============================================================================
 
-POEM_FILE_PATH = Path(__file__).parent / "poems" / "test_poem.txt"
+# Fallback used only when no poem has been saved through the web UI
+POEM_FILE_PATH = Path(__file__).parent / "poem.txt"
 
 # ============================================================================
 # DATABASE CONFIGURATION

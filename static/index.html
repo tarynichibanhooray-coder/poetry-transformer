@@ -164,13 +164,13 @@
     });
 
     loadBtn.addEventListener('click', async () => {
-      const sample = `Dos caminos se bifurcaban\nen un bosque amarillo`;
+      const sample = `Dime, la rosa está desnuda\no sólo tiene ese vestido?`;
       await fetch(base + '/load_poem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           poem: sample,
-          title: 'Sample',
+          title: 'Libro de las preguntas',
           source_language_code: 'es'
         })
       });
