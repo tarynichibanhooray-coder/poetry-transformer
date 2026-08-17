@@ -21,13 +21,13 @@ Important note
 - The `POST /trigger` handler currently includes a TODO comment where an API key check should be implemented. You can test locally without any API key; enable the key before public deployment.
 
 Quick start — run locally (recommended)
-1. Make the script executable and run the single command:
+1. Run the single command:
 
-   chmod +x run_local.sh
    ./run_local.sh
 
-   This will create a Python virtual environment (`.venv`), install dependencies from `requirements.txt`, and start uvicorn with:
-   `.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8000 --reload`.
+   This creates a Python virtual environment (`.venv`), installs dependencies from `requirements.txt`, and starts uvicorn. Override the bind address with `HOST` and `PORT`, e.g. `PORT=8080 ./run_local.sh`.
+
+   To pull the latest `main` first and then start, use `./update_and_run.sh`, which delegates to `run_local.sh` rather than duplicating the launch logic. Note that it checks out `main`, so don't run it from a feature branch.
 
 2. Open the UI in your browser:
 
@@ -54,7 +54,9 @@ OPENAI_MODEL="gpt-4o"
 SERVER_URL="http://localhost:8000"  # optional for pi_trigger
 ```
 
-- The app reads OPENAI_API_KEY from the environment. If you don’t set a key, OpenAI calls will fail. For local development you can stub or skip OpenAI calls.
+- `config.py` loads `.env` automatically, so the key is picked up however you start the app — `run_local.sh`, a bare `uvicorn` command, `main.py`, or a test. No launcher script injects it.
+- Real environment variables take precedence over `.env`, so systemd or CI can override it without editing the file.
+- If `OPENAI_API_KEY` is missing, the app fails at startup with a clear message instead of starting and then returning an opaque 401 on the first translation.
 - `.env` is included in `.gitignore` to avoid accidentally committing secrets.
 
 API examples (local)

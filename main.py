@@ -19,6 +19,8 @@ class PoetryTransformerApplication:
 
     def __init__(self):
         """Initialize the Poetry Transformer application"""
+        config.validate_required_settings()
+
         self.database_manager = DatabaseManager()
         self.ai_translator = OpenAITranslator()
         self.transformer_engine = PoemTransformerEngine()

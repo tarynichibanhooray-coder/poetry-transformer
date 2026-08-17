@@ -18,6 +18,8 @@ from poem_transformer_engine import (
 )
 
 
+config.validate_required_settings()
+
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
