@@ -1,19 +1,27 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import asyncio
 import json
 import os
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
-import time
+import config
 
-from poem_transformer_engine import PoemTransformerEngine, TransformationPhase
+from poem_transformer_engine import (
+    PoemTransformerEngine,
+    TransformationPhase,
+    join_words_with_separators,
+    split_words_and_separators,
+)
 
 
-OUTPUT_JSONL_PATH = Path("output/translation_stream.jsonl")
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+
+OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 OUTPUT_JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
 # Ensure file exists
 if not OUTPUT_JSONL_PATH.exists():
@@ -50,9 +58,6 @@ class ConnectionManager:
 
 app = FastAPI()
 
-# Serve static files from the `static/` directory and return index.html at '/'
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,6 +76,44 @@ LOG_INTERMEDIATE_SYNONYMS = os.environ.get("LOG_INTERMEDIATE_SYNONYMS", "false")
 
 # Lock to serialize synonym cycles so they don't overlap
 _cycle_lock = asyncio.Lock()
+
+
+class LoadPoemRequest(BaseModel):
+    """Payload for loading a poem, including the language it was written in."""
+    poem: str
+    title: Optional[str] = None
+    source_language_code: Optional[str] = None
+    target_language_code: Optional[str] = None
+    stanza_delimiter: Optional[str] = None
+
+
+def _resolve_language(code: Optional[str], supported: List[dict], label: str) -> Optional[dict]:
+    """Look up a language by ISO code, rejecting codes the app doesn't support.
+
+    Unknown codes are refused rather than passed through, since a typo would
+    silently create its own partition of the translation cache.
+    """
+    if not code:
+        return None
+
+    for language in supported:
+        if language["code"] == code:
+            return language
+
+    supported_codes = ", ".join(language["code"] for language in supported)
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported {label} language code '{code}'. Expected one of: {supported_codes}"
+    )
+
+
+def _current_language_pair() -> Dict[str, str]:
+    return {
+        "source_language": engine.source_language,
+        "source_language_code": engine.source_language_code,
+        "target_language": engine.target_language,
+        "target_language_code": engine.target_language_code,
+    }
 
 
 def _append_event_to_jsonl(event: dict) -> None:
@@ -148,9 +191,11 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
 
     # Broadcast each synonym in place (intermediate). Do not persist intermediates unless configured.
     for syn in dedup_synonyms:
-        temp_words = engine.get_current_transformation_state().split()
+        temp_words, temp_separators = split_words_and_separators(
+            engine.get_current_transformation_state()
+        )
         temp_words[word_index] = syn
-        temp_state = ' '.join(temp_words)
+        temp_state = join_words_with_separators(temp_words, temp_separators)
 
         inter_event = {
             "sequence_index": None,
@@ -294,14 +339,61 @@ async def trigger(request: Request):
     return {"status": "accepted", "word_index": word_index}
 
 
-@app.post("/load_poem")
-async def load_poem(payload: dict):
-    """Load poem text into the engine. Payload: {"poem": "text..."} """
-    poem = payload.get("poem")
-    if not poem:
-        return {"error": "missing poem"}
+@app.get("/languages")
+async def languages():
+    """List the language pairs a poem can be entered with."""
+    return {
+        "source_languages": config.SUPPORTED_SOURCE_LANGUAGES,
+        "target_languages": config.SUPPORTED_TARGET_LANGUAGES,
+        "default_source_code": config.SOURCE_LANGUAGE_CODE,
+        "default_target_code": config.TARGET_LANGUAGE_CODE,
+    }
 
-    engine.initialize_poem_with_text(poem)
+
+@app.get("/poems")
+async def poems():
+    """List previously saved poems, newest first."""
+    return {"poems": engine.database_manager.retrieve_all_poem_entries()}
+
+
+@app.post("/load_poem")
+async def load_poem(payload: LoadPoemRequest):
+    """Load poem text into the engine and save it with its language pair."""
+    poem = payload.poem.strip()
+    if not poem:
+        raise HTTPException(status_code=400, detail="Poem text is empty")
+
+    source = _resolve_language(
+        payload.source_language_code, config.SUPPORTED_SOURCE_LANGUAGES, "source"
+    )
+    target = _resolve_language(
+        payload.target_language_code, config.SUPPORTED_TARGET_LANGUAGES, "target"
+    )
+
+    source_code = source["code"] if source else engine.source_language_code
+    target_code = target["code"] if target else engine.target_language_code
+    if source_code == target_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Source and target languages must differ"
+        )
+
+    engine.initialize_poem_with_text(
+        poem,
+        source_language=source["name"] if source else None,
+        source_language_code=source["code"] if source else None,
+        target_language=target["name"] if target else None,
+        target_language_code=target["code"] if target else None,
+    )
+
+    language_pair = _current_language_pair()
+
+    poem_id = engine.database_manager.store_or_update_poem_entry(
+        raw_text=poem,
+        title=payload.title,
+        stanza_delimiter=payload.stanza_delimiter,
+        **language_pair
+    )
 
     event = {
         "sequence_index": 0,
@@ -314,20 +406,25 @@ async def load_poem(payload: dict):
         "confidence": 1.0,
         "alternatives": [],
         "triggered_by_context": False,
-        "context_snapshot": {"total_words": len(engine.original_poem_words)}
+        "context_snapshot": {
+            "total_words": len(engine.original_poem_words),
+            "poem_id": poem_id,
+            **language_pair
+        }
     }
 
     _append_event_to_jsonl(event)
     asyncio.create_task(_broadcast_event(event))
 
-    return {"status": "ok"}
+    return {"status": "ok", "poem_id": poem_id, **language_pair}
 
 
 @app.get("/state")
 async def state():
     return {
         "current_state": engine.get_current_transformation_state(),
-        "stats": engine.get_transformation_statistics()
+        "stats": engine.get_transformation_statistics(),
+        **_current_language_pair()
     }
 
 
@@ -347,7 +444,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "confidence": 1.0,
             "alternatives": [],
             "triggered_by_context": False,
-            "context_snapshot": {}
+            "context_snapshot": _current_language_pair()
         }
         await manager.send_personal_message(json.dumps(init_event, ensure_ascii=False), websocket)
 
@@ -359,3 +456,8 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
+
+
+# Registered last on purpose: a mount at "/" matches every path and every scope
+# type, so any route declared after it would be unreachable.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

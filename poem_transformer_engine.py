@@ -12,6 +12,44 @@ from database_manager import DatabaseManager
 from openai_translator import OpenAITranslator
 
 
+WHITESPACE_RUN_PATTERN = re.compile(r'(\s+)')
+
+
+def split_words_and_separators(text: str) -> Tuple[List[str], List[str]]:
+    """
+    Split text into words plus the whitespace run that follows each word
+
+    Args:
+        text: Text to split
+
+    Returns:
+        Tuple of (words, separators) where separators[i] follows words[i].
+        The word list matches str.split() so indices stay consistent with
+        original_poem_words.
+    """
+    parts = WHITESPACE_RUN_PATTERN.split(text.strip())
+    return parts[0::2], parts[1::2]
+
+
+def join_words_with_separators(words: List[str], separators: List[str]) -> str:
+    """
+    Rebuild text from words and their separators, keeping line breaks intact
+
+    Args:
+        words: Words in order
+        separators: Whitespace runs, where separators[i] follows words[i]
+
+    Returns:
+        The reassembled text
+    """
+    pieces = []
+    for index, word in enumerate(words):
+        pieces.append(word)
+        if index < len(words) - 1:
+            pieces.append(separators[index] if index < len(separators) else ' ')
+    return ''.join(pieces)
+
+
 class TransformationPhase(Enum):
     """Enum for transformation phases"""
     PHASE_1_WORD_BY_WORD = 1
@@ -84,13 +122,39 @@ class PoemTransformerEngine:
             print(f"✗ Error loading poem: {error}")
             raise
 
-    def initialize_poem_with_text(self, poem_text: str) -> None:
+    def initialize_poem_with_text(
+        self,
+        poem_text: str,
+        source_language: str = None,
+        source_language_code: str = None,
+        target_language: str = None,
+        target_language_code: str = None
+    ) -> None:
         """
         Initialize the poem transformer with poem text
-        
+
+        Language is a property of the poem rather than the engine, so each poem
+        can declare what it was written in. Omitted values keep whatever the
+        engine was last using.
+
         Args:
             poem_text: The complete poem as a string
+            source_language: Name of the poem's language, e.g. "Spanish"
+            source_language_code: ISO code of the poem's language, e.g. "es"
+            target_language: Name of the language to translate into
+            target_language_code: ISO code of the language to translate into
         """
+        if source_language:
+            self.source_language = source_language
+        if source_language_code:
+            self.source_language_code = source_language_code
+        if target_language:
+            self.target_language = target_language
+        if target_language_code:
+            self.target_language_code = target_language_code
+
+        poem_text = poem_text.strip()
+
         self.original_poem = poem_text
         self.original_poem_words = self.extract_words_from_poem_text(poem_text)
         self.current_transformation_state = poem_text
@@ -100,6 +164,7 @@ class PoemTransformerEngine:
         
         if config.DEBUG_MODE:
             print(f"✓ Poem initialized with {len(self.original_poem_words)} words")
+            print(f"  {self.source_language} → {self.target_language}")
 
     def extract_words_from_poem_text(self, poem_text: str) -> List[str]:
         """
@@ -380,9 +445,13 @@ class PoemTransformerEngine:
             word_index: Index of word to replace
             replacement_word: New word to use
         """
-        current_words = self.current_transformation_state.split()
+        current_words, separators = split_words_and_separators(
+            self.current_transformation_state
+        )
         current_words[word_index] = replacement_word
-        self.current_transformation_state = ' '.join(current_words)
+        self.current_transformation_state = join_words_with_separators(
+            current_words, separators
+        )
 
     def replace_phrase_in_transformation_state(
         self,
@@ -398,10 +467,24 @@ class PoemTransformerEngine:
             end_index: Ending word index (exclusive)
             replacement_phrase: New phrase to use
         """
-        current_words = self.current_transformation_state.split()
+        current_words, separators = split_words_and_separators(
+            self.current_transformation_state
+        )
         replacement_words = replacement_phrase.split()
+
+        # Keep whatever whitespace trailed the replaced span so the line break
+        # after the phrase survives, even when the word count changes.
+        trailing_separator = (
+            separators[end_index - 1] if end_index - 1 < len(separators) else ' '
+        )
+        separators[start_index:end_index] = (
+            [' '] * (len(replacement_words) - 1) + [trailing_separator]
+        )
         current_words[start_index:end_index] = replacement_words
-        self.current_transformation_state = ' '.join(current_words)
+
+        self.current_transformation_state = join_words_with_separators(
+            current_words, separators
+        )
 
     def transition_to_phase_2_pairs(self) -> None:
         """Transition from Phase 1 to Phase 2"""
@@ -444,6 +527,9 @@ class PoemTransformerEngine:
             return 100.0
         
         total_operations = len(self.original_poem_words) * 2  # Phase 1 + Phase 2 estimate
+        if total_operations == 0:  # No poem loaded yet
+            return 0.0
+
         progress = (self.trigger_count / total_operations) * 100
         return min(progress, 99.9)  # Cap at 99.9% until complete
 

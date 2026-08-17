@@ -175,6 +175,114 @@ class DatabaseManager:
         """
         self.cursor.execute(create_table_sql)
 
+    def store_or_update_poem_entry(
+        self,
+        raw_text: str,
+        source_language: str,
+        source_language_code: str,
+        target_language: str,
+        target_language_code: str,
+        title: str = None,
+        stanza_delimiter: str = None
+    ) -> int:
+        """
+        Store a poem and the language pair it was entered with
+
+        Re-saving the same text under the same language pair updates the
+        existing row instead of adding a duplicate, so the poem list stays a
+        library rather than a log of every load.
+
+        Args:
+            raw_text: Poem text with real line breaks
+            source_language: Name of source language
+            source_language_code: ISO code of source language
+            target_language: Name of target language
+            target_language_code: ISO code of target language
+            title: Optional poem title
+            stanza_delimiter: Delimiter the poem was entered with, if any
+
+        Returns:
+            ID of the stored record
+        """
+        existing_query = """
+        SELECT id FROM poems
+        WHERE raw_text = ? AND source_language_code = ? AND target_language_code = ?
+        """
+        self.cursor.execute(
+            existing_query, (raw_text, source_language_code, target_language_code)
+        )
+        existing_row = self.cursor.fetchone()
+
+        if existing_row:
+            update_sql = """
+            UPDATE poems
+            SET title = COALESCE(?, title), updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """
+            self.cursor.execute(update_sql, (title, existing_row['id']))
+            self.commit_database_changes()
+            return existing_row['id']
+
+        lines_json = json.dumps(raw_text.split('\n'), ensure_ascii=False)
+
+        insert_sql = """
+        INSERT INTO poems
+        (title, source_language, source_language_code, target_language,
+         target_language_code, raw_text, lines_json, stanza_delimiter)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.cursor.execute(
+            insert_sql,
+            (
+                title,
+                source_language,
+                source_language_code,
+                target_language,
+                target_language_code,
+                raw_text,
+                lines_json,
+                stanza_delimiter
+            )
+        )
+        self.commit_database_changes()
+        return self.cursor.lastrowid
+
+    def retrieve_all_poem_entries(self) -> List[Dict]:
+        """
+        Retrieve every stored poem, newest first
+
+        Returns:
+            List of poem dictionaries
+        """
+        query = """
+        SELECT id, title, source_language, source_language_code, target_language,
+               target_language_code, raw_text, created_at
+        FROM poems
+        ORDER BY id DESC
+        """
+        self.cursor.execute(query)
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def retrieve_poem_entry_by_id(self, poem_id: int) -> Optional[Dict]:
+        """
+        Retrieve a single stored poem
+
+        Args:
+            poem_id: ID of the poem to look up
+
+        Returns:
+            Poem dictionary, or None if no poem has that ID
+        """
+        query = """
+        SELECT id, title, source_language, source_language_code, target_language,
+               target_language_code, raw_text, created_at
+        FROM poems
+        WHERE id = ?
+        """
+        self.cursor.execute(query, (poem_id,))
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
     def commit_database_changes(self) -> None:
         """Commit all pending database changes"""
         try:
