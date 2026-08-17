@@ -12,6 +12,11 @@ __pycache__/
 poetry_transformer.db
 output/
 
+# SQLite sidecar files, recreated on every run because the app uses WAL mode
+*.db-shm
+*.db-wal
+*.sqlite3
+
 # Editor/IDE
 .idea/
 .vscode/
