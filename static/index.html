@@ -271,13 +271,13 @@
       let indices = [];
       if (isIntermediate) {
         indices = [snapshot.word_index];
-      } else if (Number.isFinite(snapshot.block_start)) {
-        for (let i = snapshot.block_start; i < snapshot.block_end; i += 1) indices.push(i);
-        indices = changedIndices(lastWords, words, indices);
-      } else if (Number.isFinite(snapshot.word_index)) {
-        indices = [snapshot.word_index];
       } else {
-        indices = changedIndices(lastWords, words, filledIndices(words));
+        const changed = changedIndices(lastWords, words, []);
+        if (changed.length === 0) {
+          lastWords = words ? words.slice() : lastWords;
+          return;
+        }
+        indices = changed;
       }
 
       await showChangedWords(indices, words, separators, stateText, nextColor, {

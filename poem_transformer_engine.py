@@ -46,9 +46,8 @@ class TransformationPhase(Enum):
     synonyms before it settles. After that the poem is gathered: each trigger
     picks a span and tries to leave it better, with any chosen ending as a
     direction rather than a countdown. There is no booked number of steps to
-    the target. When the live text already reads as that target, later
-    triggers work it back into the original language, again by asking the
-    model rather than by replaying the path that got there.
+    the target. When the live text already reads as that target, the same
+    process starts again from that text toward the original language.
     """
     PHASE_1_WORD_BY_WORD = 1
     PHASE_2_GROWING_BLOCKS = 2
@@ -114,6 +113,8 @@ class PoemTransformerEngine:
         self.settled_spans = set()
         self.settled_line_indices = set()
         self.unchanged_gathers = 0
+        self.home_poem = None
+        self.on_return_journey = False
 
         # What the last trigger did, for clients that highlight or label it
         self.last_changed_span = None
@@ -193,6 +194,8 @@ class PoemTransformerEngine:
 
         self.final_translation = (final_translation or '').strip() or None
         self.original_poem = poem_text
+        self.home_poem = poem_text
+        self.on_return_journey = False
         self.original_poem_words = self.extract_words_from_poem_text(poem_text)
 
         # One slot per original word. A slot may hold a multi-word translation
@@ -433,6 +436,7 @@ class PoemTransformerEngine:
             The transformed poem after this trigger
         """
         self.trigger_count += 1
+        self.last_changed_span = None
         
         if self.current_phase == TransformationPhase.PHASE_1_WORD_BY_WORD:
             self.advance_transformation_in_phase_1_word_by_word()
@@ -524,36 +528,45 @@ class PoemTransformerEngine:
         line (later, sometimes a stanza) and asks for an improvement. A chosen
         ending, if the poem has one, is a direction in the prompt, not a text
         that will be pasted after N clicks. When the poem already reads as that
-        ending, the next trigger begins working it back into the original.
+        ending, later triggers run the same process back toward the original.
         """
-        if self.poem_has_arrived():
-            self.begin_return_to_source()
+        if self.poem_reached_its_destination():
+            if self.on_return_journey:
+                self.mark_transformation_complete()
+            else:
+                self.begin_return_to_source()
             return
 
         self.gathering_steps += 1
 
         if self.try_gathering_passes(prefer_line=self.unchanged_gathers >= 1):
             self.unchanged_gathers = 0
-            if self.poem_has_arrived():
-                self.begin_return_to_source()
+            if self.poem_reached_its_destination():
+                if self.on_return_journey:
+                    self.mark_transformation_complete()
+                else:
+                    self.begin_return_to_source()
             return
 
         # Short blocks started echoing the purple line. Rewrite a whole line
         # so the poem cannot sit on one reading.
         if self.try_gathering_passes(prefer_line=True):
             self.unchanged_gathers = 0
-            if self.poem_has_arrived():
-                self.begin_return_to_source()
+            if self.poem_reached_its_destination():
+                if self.on_return_journey:
+                    self.mark_transformation_complete()
+                else:
+                    self.begin_return_to_source()
             return
 
-        # No numbered limit: we only write a destination line when gathering
-        # has stopped producing new readings, so the poem can actually arrive.
+        # Outbound only: never paste the original Spanish on the way back.
         if (
-            self.unchanged_gathers >= config.GATHER_STALL_BEFORE_LANDING
+            not self.on_return_journey
+            and self.unchanged_gathers >= config.GATHER_STALL_BEFORE_LANDING
             and self.try_land_one_destination_line()
         ):
             self.unchanged_gathers = 0
-            if self.poem_has_arrived():
+            if self.poem_reached_its_destination():
                 self.begin_return_to_source()
             return
 
@@ -678,6 +691,17 @@ class PoemTransformerEngine:
 
         return self.current_lines_match(self.destination_lines)
 
+    def poem_reached_its_destination(self) -> bool:
+        """True when gathering has arrived at the ending of this journey."""
+        return self.poem_has_arrived() or self.all_destination_lines_matched()
+
+    def all_destination_lines_matched(self) -> bool:
+        """True when every line already reads as the destination."""
+        if not self.destination_lines or not self.line_spans:
+            return False
+        matched = self.destination_matched_line_indices()
+        return matched == set(range(len(self.destination_lines)))
+
     def destination_matched_line_indices(self) -> set:
         """Line indexes whose live text already matches the destination."""
         if not self.destination_lines:
@@ -701,6 +725,37 @@ class PoemTransformerEngine:
     ) -> bool:
         """True when this span touches a line that already is the destination."""
         matched = self.destination_matched_line_indices()
+        for line_index, (line_start, line_end) in enumerate(self.line_spans):
+            if line_index not in matched:
+                continue
+            if start_index < line_end and end_index > line_start:
+                return True
+        return False
+
+    def origin_matched_line_indices(self) -> set:
+        """Line indexes whose live text already matches the original."""
+        origin_lines = self.origin_lines()
+        if not origin_lines:
+            return set()
+
+        current_lines = self.fit_segments_to_line_count(
+            self.get_current_transformation_state().split('\n'),
+            len(origin_lines)
+        )
+        matched = set()
+        for line_index, origin in enumerate(origin_lines):
+            current = current_lines[line_index] if line_index < len(current_lines) else ''
+            if self.normalize_reading(current) == self.normalize_reading(origin):
+                matched.add(line_index)
+        return matched
+
+    def span_overlaps_origin_matched_line(
+        self,
+        start_index: int,
+        end_index: int
+    ) -> bool:
+        """True when this span touches a line that already is the original."""
+        matched = self.origin_matched_line_indices()
         for line_index, (line_start, line_end) in enumerate(self.line_spans):
             if line_index not in matched:
                 continue
@@ -747,6 +802,11 @@ class PoemTransformerEngine:
             self.current_phase == TransformationPhase.PHASE_2_GROWING_BLOCKS
             and self.destination_lines
             and self.span_overlaps_destination_matched_line(start_index, end_index)
+        ):
+            return False
+        if (
+            self.current_phase == TransformationPhase.RETURNING_TO_SOURCE
+            and self.span_overlaps_origin_matched_line(start_index, end_index)
         ):
             return False
         if not ignore_settle and self.span_is_settled(start_index, end_index):
@@ -840,6 +900,50 @@ class PoemTransformerEngine:
             return True
         return False
 
+    def origin_lines(self) -> List[str]:
+        """The original poem, split across the same lines as the live text."""
+        if not self.original_poem or not self.line_spans:
+            return []
+        return self.fit_segments_to_line_count(
+            self.original_poem.split('\n'),
+            len(self.line_spans),
+            [end - start for start, end in self.line_spans]
+        )
+
+    def try_land_one_original_line(self) -> bool:
+        """
+        Write one original line that is not on the page yet
+
+        Returning has no click budget. This runs only when the model has
+        stopped moving the poem back into the original language.
+        """
+        origin_lines = self.origin_lines()
+        if not origin_lines or not self.line_spans:
+            return False
+
+        current_lines = self.fit_segments_to_line_count(
+            self.get_current_transformation_state().split('\n'),
+            len(origin_lines)
+        )
+        for line_index, ((start_index, end_index), origin) in enumerate(
+            zip(self.line_spans, origin_lines)
+        ):
+            current = current_lines[line_index] if line_index < len(current_lines) else ''
+            if self.normalize_reading(current) == self.normalize_reading(origin):
+                continue
+
+            self.last_action_phase = self.current_phase
+            self.replace_block_in_transformation_state(
+                start_index,
+                end_index,
+                [origin]
+            )
+            self.remember_reading(start_index, end_index, [origin])
+            if config.VERBOSE_LOGGING:
+                print(f"  → Landing original line: {origin!r}")
+            return True
+        return False
+
     def poem_has_returned(self) -> bool:
         """
         True when the live text already reads as the original poem
@@ -851,7 +955,7 @@ class PoemTransformerEngine:
             return False
 
         origin_lines = self.fit_segments_to_line_count(
-            self.original_poem.split('\n'),
+            (self.home_poem or self.original_poem).split('\n'),
             len(self.line_spans) or 1,
             [end - start for start, end in self.line_spans] or None
         )
@@ -875,57 +979,80 @@ class PoemTransformerEngine:
             len(expected_lines)
         )
         return [
-            ' '.join(line.split()) for line in current_lines
+            self.normalize_reading(line) for line in current_lines
         ] == [
-            ' '.join(line.split()) for line in expected_lines
+            self.normalize_reading(line) for line in expected_lines
         ]
 
     def begin_return_to_source(self) -> None:
-        """Start working the poem back into its original language."""
-        if self.current_phase == TransformationPhase.RETURNING_TO_SOURCE:
+        """
+        Start the same process again, from the target back toward the original
+
+        The live English is rebased as a new poem: word-by-word into Spanish
+        with synonym cycling, then gathering toward the original. The original
+        is a destination, not text to paste.
+        """
+        if self.on_return_journey:
             return
         if self.current_phase == TransformationPhase.COMPLETE:
             return
 
-        self.current_phase = TransformationPhase.RETURNING_TO_SOURCE
+        home = (self.home_poem or self.original_poem or '').strip()
+        live = self.get_current_transformation_state().strip()
+        if not live and self.destination_lines:
+            live = '\n'.join(self.destination_lines)
+        if not live or not home:
+            return
+
+        self.on_return_journey = True
+        self.home_poem = home
+
+        self.source_language, self.target_language = (
+            self.target_language,
+            self.source_language,
+        )
+        self.source_language_code, self.target_language_code = (
+            self.target_language_code,
+            self.source_language_code,
+        )
+
+        self.original_poem = live
+        self.final_translation = home
+        self.original_poem_words = self.extract_words_from_poem_text(live)
+        _, self.word_separators = split_words_and_separators(live)
+        self.current_words = list(self.original_poem_words)
+        # Keep the arrived text on the page. Rebuilding here would tidy it
+        # and look like a last-second rewrite of the target.
+        self.current_transformation_state = live
+
+        self.current_phase = TransformationPhase.PHASE_1_WORD_BY_WORD
+        self.word_synonym_cycle_index = {}
+        self.line_spans = self.compute_line_spans()
+        self.stanza_spans = self.compute_stanza_spans()
+        self.phase_1_word_queue = self.build_phase_1_word_queue()
+        self.destination_lines = self.build_destination_lines()
         self.gathering_steps = 0
         self.seen_poem_readings = set()
         self.seen_span_readings = {}
         self.settled_spans = set()
         self.settled_line_indices = set()
         self.unchanged_gathers = 0
+        self.last_changed_span = None
+        self.last_action_phase = None
+        self.last_block_drafts = []
+        self.last_block_improvement = None
+        self.last_block_unchanged = False
+        self.last_block_defect = None
+
         if config.DEBUG_MODE:
             print(
-                f"✓ Target reached; returning toward {self.source_language}"
+                f"✓ Target reached; {self.source_language} → {self.target_language} "
+                f"word by word ({len(self.phase_1_word_queue)} words)"
             )
 
     def advance_transformation_returning_to_source(self) -> None:
-        """
-        Work the poem back into the original language, span by span
-
-        This is a new gathering pass, not an unwind of the spans that reached
-        the target. Each trigger asks the model to translate a chosen passage
-        toward the original, which is a direction rather than text to paste.
-        """
-        if self.poem_has_returned():
-            self.mark_transformation_complete()
-            return
-
-        self.gathering_steps += 1
-
-        if self.try_gathering_passes(prefer_line=self.unchanged_gathers >= 1):
-            self.unchanged_gathers = 0
-            if self.poem_has_returned():
-                self.mark_transformation_complete()
-            return
-
-        if self.try_gathering_passes(prefer_line=True):
-            self.unchanged_gathers = 0
-            if self.poem_has_returned():
-                self.mark_transformation_complete()
-            return
-
-        self.unchanged_gathers += 1
+        """Older return path; the reverse now starts as a fresh Phase 1."""
+        self.begin_return_to_source()
 
     def mark_transformation_complete(self) -> None:
         """Record that the poem now reads as its original again."""
@@ -956,16 +1083,34 @@ class PoemTransformerEngine:
 
         segments = self.get_or_fetch_block_translation(start_index, end_index)
         if self.last_block_unchanged or not self.gathering_change_is_an_improvement():
-            self.mark_span_settled(start_index, end_index)
+            self.settle_if_passage_is_done(start_index, end_index)
             return False
         if self.reading_is_repeat(start_index, end_index, segments, text_before):
-            self.mark_span_settled(start_index, end_index)
+            self.settle_if_passage_is_done(start_index, end_index)
             return False
 
         self.replace_block_in_transformation_state(start_index, end_index, segments)
         self.remember_reading(start_index, end_index, segments)
         self.unsettle_span(start_index, end_index)
         return True
+
+    def settle_if_passage_is_done(self, start_index: int, end_index: int) -> None:
+        """
+        Skip this passage later only if it is actually finished
+
+        On the way out, a keep means the English is already good. On the way
+        back, leftover English is not done: settling it would freeze the first
+        half of the poem while later triggers only recolor the same words.
+        """
+        if self.on_return_journey:
+            if not self.span_overlaps_destination_matched_line(start_index, end_index):
+                return
+        elif (
+            self.current_phase == TransformationPhase.RETURNING_TO_SOURCE
+            and not self.span_overlaps_origin_matched_line(start_index, end_index)
+        ):
+            return
+        self.mark_span_settled(start_index, end_index)
 
     def gathering_change_is_an_improvement(self) -> bool:
         """
@@ -983,6 +1128,8 @@ class PoemTransformerEngine:
         if self.last_block_unchanged:
             return False
         defect = (self.last_block_defect or '').strip().lower()
+        if self.on_return_journey:
+            return defect in config.GATHER_REAL_DEFECTS or defect in config.RETURN_REAL_DEFECTS
         return defect in config.GATHER_REAL_DEFECTS
 
     def expand_span_to_whole_phrases(self, start_index: int, end_index: int) -> Tuple[int, int]:
@@ -1264,9 +1411,8 @@ class PoemTransformerEngine:
 
         Every pass is shown the original passage and the poem's current
         rendering of it, and is asked to better that rendering or to say that
-        it cannot. On the return, the live passage is translated toward the
-        original language instead. The answer depends on the state of the poem,
-        which is why the phrase cache is off by default.
+        it cannot. After the target is reached, original_poem is the live
+        target and this is the same ask toward the original language.
 
         Args:
             start_index: First word index of the block
@@ -1281,33 +1427,18 @@ class PoemTransformerEngine:
         line_weights = [len(line.split()) for line in original_lines]
         mode = mode or self.choose_translation_mode_for_block(start_index, end_index)
         current_reading = self.get_current_text_for_span(start_index, end_index).split('\n')
-        returning = self.current_phase == TransformationPhase.RETURNING_TO_SOURCE
 
-        # On the way out, the model translates the original. On the way back,
-        # it translates the live English of this span toward the original,
-        # rather than being handed the Spanish to paste.
-        if returning:
-            source_lines = self.fit_segments_to_line_count(
-                current_reading,
-                len(original_lines),
-                line_weights
-            )
-            source_block = '\n'.join(source_lines)
-            from_language = self.target_language
-            to_language = self.source_language
-            from_code = self.target_language_code
-            to_code = self.source_language_code
-            arriving_at = self.original_poem
-            whole_poem = self.original_poem
-        else:
-            source_lines = original_lines
-            source_block = '\n'.join(source_lines)
-            from_language = self.source_language
-            to_language = self.target_language
-            from_code = self.source_language_code
-            to_code = self.target_language_code
-            arriving_at = self.final_translation
-            whole_poem = self.original_poem
+        # After the target is reached the engine rebases, so this path is the
+        # same on the way back: original_poem is the live target, and
+        # final_translation is the original language.
+        source_lines = original_lines
+        source_block = '\n'.join(source_lines)
+        from_language = self.source_language
+        to_language = self.target_language
+        from_code = self.source_language_code
+        to_code = self.target_language_code
+        arriving_at = self.final_translation
+        whole_poem = self.original_poem
 
         self.last_block_drafts = []
         self.last_block_improvement = None
@@ -1331,7 +1462,7 @@ class PoemTransformerEngine:
             )
 
         if config.VERBOSE_LOGGING:
-            direction = "back toward" if returning else "on"
+            direction = "back toward" if self.on_return_journey else "on"
             print(f"  → Working {direction} {mode} passage: {source_block!r}")
 
         already_used = self.forbidden_readings_for_span(start_index, end_index)
@@ -1342,9 +1473,9 @@ class PoemTransformerEngine:
             poem_so_far=self.current_transformation_state,
             whole_poem=whole_poem,
             mode=mode,
-            current_reading=None if returning else current_reading,
+            current_reading=current_reading,
             arriving_at=arriving_at,
-            returning=returning,
+            returning=False,
             original_language=self.source_language,
             already_used=already_used
         )
@@ -1378,7 +1509,7 @@ class PoemTransformerEngine:
         if self.last_block_unchanged or not self.gathering_change_is_an_improvement():
             self.last_block_unchanged = True
             segments = self.fit_segments_to_line_count(
-                current_reading if not returning else source_lines,
+                current_reading,
                 len(original_lines),
                 line_weights
             )

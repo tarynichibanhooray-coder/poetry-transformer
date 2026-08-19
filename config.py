@@ -160,6 +160,16 @@ GATHER_REAL_DEFECTS = (
     "closer_to_destination",
 )
 
+# On the way back, leftover English is itself a defect.
+RETURN_REAL_DEFECTS = (
+    "still_english",
+    "closer_to_source",
+    "wrong_sense",
+    "grammar",
+    "crib",
+    "dropped_image",
+)
+
 # How each kind of block is translated. A two-word block wants the most likely
 # wording, so it runs cold; the closing pass over the whole poem wants room to
 # find a phrasing worth reading, so it runs warm and writes several drafts

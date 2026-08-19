@@ -153,8 +153,13 @@ class GatheringArrivalTests(unittest.TestCase):
                 if engine.poem_has_arrived():
                     break
 
-        self.assertTrue(engine.poem_has_arrived() or engine.get_current_phase() == TransformationPhase.RETURNING_TO_SOURCE)
-        self.assertEqual(engine.get_current_phase(), TransformationPhase.RETURNING_TO_SOURCE)
+        self.assertTrue(engine.on_return_journey)
+        self.assertEqual(
+            engine.get_current_phase(),
+            TransformationPhase.PHASE_1_WORD_BY_WORD,
+        )
+        self.assertEqual(engine.source_language, "English")
+        self.assertEqual(engine.target_language, "Spanish")
 
     def test_destination_wording_is_not_treated_as_a_repeat(self):
         engine = make_engine()
@@ -289,6 +294,81 @@ class GatheringArrivalTests(unittest.TestCase):
 
         picked = engine.pick_gathering_span(prefer_line=True)
         self.assertIsNotNone(picked)
+
+    def test_reaching_the_target_starts_the_return_to_spanish(self):
+        engine = make_engine()
+        start_gathering(
+            engine,
+            "Tell me, is the rose naked",
+            "or is that her only dress?",
+        )
+        self.assertTrue(engine.poem_has_arrived())
+
+        engine.process_next_sensor_trigger()
+        self.assertTrue(engine.on_return_journey)
+        self.assertEqual(
+            engine.get_current_phase(),
+            TransformationPhase.PHASE_1_WORD_BY_WORD,
+        )
+        self.assertEqual(engine.source_language, "English")
+        self.assertEqual(engine.target_language, "Spanish")
+        live = engine.get_current_transformation_state()
+        self.assertIn("Tell me", live)
+        self.assertNotIn("rosa", live)
+        self.assertTrue(engine.phase_1_word_queue)
+
+        engine.process_next_sensor_trigger()
+        self.assertEqual(
+            engine.get_current_phase(),
+            TransformationPhase.PHASE_1_WORD_BY_WORD,
+        )
+        self.assertNotEqual(
+            engine.get_current_transformation_state(),
+            "Dime, la rosa está desnuda\no sólo tiene ese vestido?",
+        )
+
+    def test_english_first_line_is_not_frozen_during_return(self):
+        engine = make_engine()
+        start_gathering(
+            engine,
+            "Is it the same sun of yesterday",
+            "or is it another fire of its fire?",
+        )
+        engine.begin_return_to_source()
+        self.assertEqual(
+            engine.get_current_phase(),
+            TransformationPhase.PHASE_1_WORD_BY_WORD,
+        )
+        self.assertGreater(len(engine.phase_1_word_queue), 1)
+
+    def test_case_difference_still_counts_as_arrival(self):
+        engine = make_engine()
+        start_gathering(
+            engine,
+            "tell me, is the rose naked",
+            "Or is that her only dress?",
+        )
+        self.assertTrue(engine.poem_has_arrived())
+        self.assertTrue(engine.all_destination_lines_matched())
+
+    def test_return_does_not_paste_the_original_spanish(self):
+        engine = make_engine()
+        start_gathering(
+            engine,
+            "Tell me, is the rose naked",
+            "or is that her only dress?",
+        )
+        engine.begin_return_to_source()
+        for _ in range(config.GATHER_STALL_BEFORE_LANDING + 1):
+            engine.process_next_sensor_trigger()
+        self.assertNotEqual(
+            engine.normalize_reading(engine.get_current_transformation_state()),
+            engine.normalize_reading(COUPLET),
+        )
+        self.assertNotEqual(
+            engine.get_current_phase(),
+            TransformationPhase.COMPLETE,
+        )
 
     def test_empty_word_translation_does_not_erase_the_source_word(self):
         engine = make_engine()

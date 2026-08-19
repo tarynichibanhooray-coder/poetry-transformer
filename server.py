@@ -369,8 +369,10 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
 async def _run_block_trigger(seq_idx_start: int, prev_state: str):
     """Advance one block-level trigger, for the phases after word-by-word.
 
-    Gathering and the return rewrite a whole span at once, so there is nothing
-    to cycle through: a single event carries the new state.
+    Gathering rewrites a whole span at once, so there is nothing to cycle
+    through: a single event carries the new state. Hitting the target only
+    turns the engine around; the reverse word-by-word work starts on the
+    next trigger.
     """
     global sequence_index
 
@@ -381,6 +383,10 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
         acting_phase = engine.last_action_phase.name
 
     start_index, end_index = engine.last_changed_span or (None, None)
+    new_state = engine.get_current_transformation_state()
+    text_changed = ' '.join((prev_state or '').split()) != ' '.join((new_state or '').split())
+    if not text_changed:
+        start_index, end_index = None, None
 
     event = {
         "sequence_index": seq_idx_start,
@@ -418,8 +424,9 @@ async def trigger():
     In Phase 1 a trigger picks the next word from the poem's shuffled order and
     cycles its synonyms, broadcasting intermediates at SYNONYM_CYCLE_INTERVAL
     before the final choice is appended to the JSONL. After that a trigger
-    rewrites one block, first gathering toward the target and later, once the
-    target is on the page, working the poem back into the original language.
+    rewrites one block, gathering toward the target. Once the target is on the
+    page, the next triggers run that same word-then-gather process back toward
+    the original language.
 
     The work runs as a background task so the request returns immediately;
     clients see the result over the WebSocket.

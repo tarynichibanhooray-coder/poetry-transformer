@@ -522,18 +522,22 @@ class OpenAITranslator:
 
         if returning:
             language = target_language or 'the original language'
+            defects = ', '.join(config.RETURN_REAL_DEFECTS)
             return (
-                f"- You are working this passage back into {language}. Keep "
-                f"every word that is already {language} and already right.\n"
-                "        - Change only what you can honestly move further into "
-                f"{language}. Rewriting English as different English is not a "
-                "return.\n"
-                "        - Do not paste the original poem. Translate the passage "
-                "in front of you, even when you can see what it used to be.\n"
-                f"        - Set \"defect\" to one of: {defects}. If nothing is "
-                "wrong, set \"defect\" to \"none\" and \"unchanged\" to true.\n"
-                "        - Say in \"improvement\", in a few words, what you "
-                "moved back, or that you left it."
+                f"- This passage is on its way back into {language}. English "
+                "that already reads well is still English: it is not done.\n"
+                f"        - Translate the passage in front of you into {language}. "
+                "Set \"defect\" to still_english or closer_to_source whenever "
+                f"any of it is still not {language}.\n"
+                "        - Keep only words that are already "
+                f"{language} and already right. Do not rewrite {language} as "
+                "different English.\n"
+                "        - Do not paste the original poem. Translate what is "
+                "here, even when you can see what it used to be.\n"
+                f"        - Set \"defect\" to one of: {defects}. Set "
+                "\"unchanged\" to true only if this passage is already "
+                f"{language}.\n"
+                "        - Say in \"improvement\" what you moved back."
             )
 
         shared = (
