@@ -185,7 +185,8 @@ class OpenAITranslator:
         poem_so_far: str = None,
         whole_poem: str = None,
         mode: str = config.BLOCK_TRANSLATION_MODE_POETIC,
-        current_reading: List[str] = None
+        current_reading: List[str] = None,
+        arriving_at: str = None
     ) -> Dict:
         """
         Request translation of a block of the poem, one line at a time
@@ -206,6 +207,7 @@ class OpenAITranslator:
             current_reading: How the poem renders this passage right now, one
                 string per line. This is what the pass is improving on, and
                 leaving it alone is a permitted answer.
+            arriving_at: A finished translation the poem may come to rest on.
 
         Returns:
             Dictionary with 'lines', a list the same length as source_lines,
@@ -234,7 +236,7 @@ class OpenAITranslator:
 
         {self.describe_current_reading(current_reading)}
 
-        {self.describe_block_context(mode, poem_so_far, whole_poem, is_whole_poem)}
+        {self.describe_block_context(mode, poem_so_far, whole_poem, is_whole_poem, arriving_at)}
 
         Return a JSON object with exactly this format:
         {self.describe_block_response_format(settings['draft_count'], line_placeholders)}
@@ -321,7 +323,8 @@ class OpenAITranslator:
         mode: str,
         poem_so_far: str = None,
         whole_poem: str = None,
-        passage_is_whole_poem: bool = False
+        passage_is_whole_poem: bool = False,
+        arriving_at: str = None
     ) -> str:
         """
         Build the context section of the prompt
@@ -333,6 +336,9 @@ class OpenAITranslator:
             passage_is_whole_poem: Whether the passage being worked on is the
                 whole poem, in which case the surroundings are already above
                 and repeating them only muddies the prompt
+
+            arriving_at: A finished translation the poem may come to rest on,
+                shown as a direction, not as text to paste on this pass
 
         Returns:
             The context paragraphs, or an empty string
@@ -353,6 +359,14 @@ class OpenAITranslator:
                 'And this is how the whole poem reads at the moment. Your '
                 'passage has to sit inside it, and only your passage is being '
                 f'changed:\n"""\n{poem_so_far}\n"""'
+            )
+
+        if arriving_at:
+            sections.append(
+                'A translation this poem may come to rest on. Move toward it '
+                'when that would be a true improvement of THIS passage. Do not '
+                'copy it out of turn, and do not pull in lines that are not '
+                f'part of the passage:\n"""\n{arriving_at}\n"""'
             )
 
         return '\n\n'.join(sections)

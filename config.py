@@ -125,15 +125,10 @@ STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 # TRANSFORMATION PHASE CONFIGURATION
 # ============================================================================
 
-# The middle of the transformation is short blocks of this many words, staying
-# inside a line. Anything larger — a line, a stanza — belongs to Phase 3, so
-# the poem cannot jump from a pair of words to the whole page in one pass.
+# Short blocks of this many words, staying inside a line. A trigger after
+# Phase 1 picks among these, whole lines, and stanzas; nothing is booked in
+# advance, so the target is not a countdown.
 BLOCK_GROWTH_WORD_SIZES = [2, 3]
-
-# Phase 3 rewrites the poem's own units, in this order, before the ending
-# arrives a line at a time. Units that work out as the whole poem are dropped;
-# that is what arrival is for.
-BLOCK_GROWTH_STRUCTURES = ["line", "stanza"]
 
 # How many times the poem is worked over at each of the larger block sizes.
 # Phase 2's two- and three-word blocks are literal and have one answer, so they

@@ -36,10 +36,11 @@ class TransformationPhase(Enum):
     """Enum for transformation phases
 
     Phase 1 replaces every word once, in random order, cycling its real
-    synonyms before it settles. Phase 2 rewrites short blocks of two or three
-    words so the gloss becomes grammatical, without jumping to a whole line.
-    Phase 3 rewrites lines (and stanzas, when those are not the whole poem),
-    then lays the finished translation down one line at a time.
+    synonyms before it settles. After that the poem is gathered: each trigger
+    picks a span and tries to leave it better, with any chosen ending as a
+    direction rather than a countdown. There is no booked number of steps to
+    the target; the work ends when the poem already reads as that target, or
+    it simply keeps going.
     """
     PHASE_1_WORD_BY_WORD = 1
     PHASE_2_GROWING_BLOCKS = 2
@@ -94,15 +95,11 @@ class PoemTransformerEngine:
         self.line_spans = []
         self.stanza_spans = []
 
-        # Work still to do, already shuffled. A trigger takes the next item, so
-        # nothing is transformed twice and nothing is missed.
+        # Phase 1 still has a finite word list, because each word is visited
+        # once. After that there is no playlist of remaining steps.
         self.phase_1_word_queue = []
-        self.block_levels = []
-        self.current_block_queue = []
-        self.line_queue = []
-        self.arrival_queue = []
-        self.arrival_segments = []
-        self.total_planned_operations = 0
+        self.destination_lines = []
+        self.gathering_steps = 0
 
         # What the last trigger did, for clients that highlight or label it
         self.last_changed_span = None
@@ -197,31 +194,15 @@ class PoemTransformerEngine:
         self.line_spans = self.compute_line_spans()
         self.stanza_spans = self.compute_stanza_spans()
         self.phase_1_word_queue = self.build_phase_1_word_queue()
-        self.block_levels = self.build_block_levels()
-        self.current_block_queue = []
-        self.line_queue = self.build_phase_3_line_queue()
-        self.arrival_queue = list(range(len(self.line_spans)))
-        self.random_generator.shuffle(self.arrival_queue)
-        self.arrival_segments = []
-        self.total_planned_operations = (
-            len(self.phase_1_word_queue)
-            + sum(len(level) for level in self.block_levels)
-            + len(self.line_queue)
-            + len(self.arrival_queue)
-        )
+        self.destination_lines = self.build_destination_lines()
+        self.gathering_steps = 0
 
         if config.DEBUG_MODE:
             print(f"✓ Poem initialized with {len(self.original_poem_words)} words")
             print(f"  {self.source_language} → {self.target_language}")
             print(
                 f"  {len(self.line_spans)} lines, {len(self.stanza_spans)} stanzas, "
-                f"{self.total_planned_operations} triggers to complete"
-            )
-            print(
-                "  passes: "
-                + " → ".join(f"{len(level)} blocks" for level in self.block_levels)
-                + f" → {len(self.line_queue)} lines/stanzas"
-                + f" → {len(self.arrival_queue)} lines arriving"
+                f"{len(self.phase_1_word_queue)} words to visit"
             )
 
     def extract_words_from_poem_text(self, poem_text: str) -> List[str]:
@@ -420,72 +401,6 @@ class PoemTransformerEngine:
 
         return []
 
-    def build_block_levels(self) -> List[List[Tuple[int, int]]]:
-        """
-        Build the ladder of passes between the word pass and the arrival
-
-        Each rung covers the whole poem in short blocks, shuffled so the poem
-        gathers itself in no particular order. A rung that works out the same
-        as one already on the ladder is dropped, as is a rung that is just the
-        whole poem. Lines and stanzas are not in this ladder; they wait for
-        Phase 3 so a pair of words cannot become the whole page in this phase.
-
-        Returns:
-            A list of passes, each a shuffled list of block spans
-        """
-        total_words = len(self.original_poem_words)
-        if total_words == 0:
-            return []
-
-        whole_poem = [(0, total_words)]
-        partitions = [
-            self.partition_poem_into_blocks(size)
-            for size in config.BLOCK_GROWTH_WORD_SIZES
-        ]
-
-        levels = []
-        seen = set()
-        for blocks in partitions:
-            if not blocks or blocks == whole_poem:
-                continue
-
-            signature = tuple(blocks)
-            if signature in seen:
-                continue
-            seen.add(signature)
-
-            shuffled = list(blocks)
-            self.random_generator.shuffle(shuffled)
-            levels.append(shuffled)
-
-        levels.sort(key=len, reverse=True)
-        return levels
-
-    def build_phase_3_line_queue(self) -> List[Tuple[int, int]]:
-        """
-        Build the line- and stanza-sized work that Phase 3 does before arrival
-
-        Returns:
-            Block spans as [start, end) word index pairs, shuffled within each
-            unit size, with the whole poem left for arrival
-        """
-        total_words = len(self.original_poem_words)
-        whole_poem = (0, total_words)
-        queue = []
-        seen = set()
-
-        for name in config.BLOCK_GROWTH_STRUCTURES:
-            blocks = [
-                span for span in self.build_structural_blocks(name)
-                if span != whole_poem and span not in seen
-            ]
-            for span in blocks:
-                seen.add(span)
-            self.random_generator.shuffle(blocks)
-            queue.extend(blocks)
-
-        return queue
-
     def process_next_sensor_trigger(self) -> str:
         """
         Process the next sensor trigger and advance transformation
@@ -500,7 +415,9 @@ class PoemTransformerEngine:
         elif self.current_phase == TransformationPhase.PHASE_2_GROWING_BLOCKS:
             self.advance_transformation_in_phase_2_growing_blocks()
         elif self.current_phase == TransformationPhase.PHASE_3_ARRIVAL:
-            self.advance_transformation_in_phase_3_arrival()
+            # Arrival is no longer a booked pass; keep gathering.
+            self.current_phase = TransformationPhase.PHASE_2_GROWING_BLOCKS
+            self.advance_transformation_in_phase_2_growing_blocks()
         
         if config.DEBUG_MODE:
             print(f"✓ Trigger #{self.trigger_count} processed")
@@ -575,94 +492,131 @@ class PoemTransformerEngine:
 
     def advance_transformation_in_phase_2_growing_blocks(self) -> None:
         """
-        Advance Phase 2: Rewrite one block, moving up a rung when a pass is done
+        Gather the poem: pick a span and try to leave it better
 
-        A block that comes back reading exactly as it already did leaves the
-        viewer looking at an unchanged poem, so the trigger goes on to the next
-        block rather than being spent on nothing. It does not cross into Phase 3;
-        that wait is the point of the stages.
+        There is no remaining-steps list. A trigger chooses a short block or a
+        line (later, sometimes a stanza) and asks for an improvement. A chosen
+        ending, if the poem has one, is a direction in the prompt, not a text
+        that will be pasted after N clicks. The work stops when the poem already
+        reads as that ending.
         """
+        if self.poem_has_arrived():
+            self.mark_transformation_complete()
+            return
+
+        self.gathering_steps += 1
+
         for _ in range(config.MAX_BLOCKS_PER_TRIGGER):
-            while not self.current_block_queue:
-                if not self.block_levels:
-                    self.transition_to_phase_3_arrival()
-                    return
-
-                self.current_block_queue = self.block_levels.pop(0)
-                if config.DEBUG_MODE:
-                    print(f"  ↑ Pass of {len(self.current_block_queue)} blocks")
-
-            start_index, end_index = self.current_block_queue.pop(0)
-            if self.translate_and_replace_block(start_index, end_index):
-                if not self.current_block_queue and not self.block_levels:
-                    self.transition_to_phase_3_arrival()
+            span = self.pick_gathering_span()
+            if span is None:
                 return
 
-    def advance_transformation_in_phase_3_arrival(self) -> None:
+            start_index, end_index = span
+            if self.translate_and_replace_block(start_index, end_index):
+                if self.poem_has_arrived():
+                    self.mark_transformation_complete()
+                return
+
+    def pick_gathering_span(self) -> Optional[Tuple[int, int]]:
         """
-        Advance Phase 3: Rewrite one line or stanza, then lay down the ending
+        Choose the next span to work on, without a fixed itinerary
 
-        Lines come first so the poem is still being translated as poetry, not
-        yet replaced by its destination. Arrival waits until those are done,
-        and a trigger never does both.
-        """
-        if self.line_queue:
-            start_index, end_index = self.line_queue.pop(0)
-            self.translate_and_replace_block(start_index, end_index)
-            return
-
-        if not self.arrival_segments:
-            self.arrival_segments = self.prepare_arrival_segments()
-
-        if not self.arrival_queue:
-            self.current_phase = TransformationPhase.COMPLETE
-            if config.DEBUG_MODE:
-                print("✓ Poem transformation complete!")
-            return
-
-        line_index = self.arrival_queue.pop(0)
-        line_start, line_end = self.line_spans[line_index]
-
-        self.last_action_phase = self.current_phase
-        self.replace_block_in_transformation_state(
-            line_start,
-            line_end,
-            [self.arrival_segments[line_index]]
-        )
-
-        if not self.arrival_queue:
-            self.current_phase = TransformationPhase.COMPLETE
-            if config.DEBUG_MODE:
-                print("✓ Poem transformation complete!")
-
-    def prepare_arrival_segments(self) -> List[str]:
-        """
-        Work out the finished translation the poem is going to arrive at
-
-        Either the poem was given one when it was loaded, or the closing pass
-        writes it now. Either way it is settled before the first line of it is
-        laid down, so the ending is one poem rather than a line from each of
-        several.
+        Early gathering favours two- and three-word blocks inside a line.
+        Later triggers raise the chance of a whole line, then a stanza, so the
+        unit can grow without ever being promised on a given step.
 
         Returns:
-            The finished translation, one segment per line of the poem
+            A [start, end) word span, or None if the poem has no words
         """
-        line_weights = [end - start for start, end in self.line_spans]
+        total_words = len(self.original_poem_words)
+        if total_words == 0:
+            return None
 
-        if self.final_translation:
-            if config.VERBOSE_LOGGING:
-                print("  ✓ Arriving at the translation the poem was given")
-            return self.fit_segments_to_line_count(
-                self.final_translation.split('\n'),
-                len(self.line_spans),
-                line_weights
+        whole_poem = (0, total_words)
+        short_blocks = []
+        for size in config.BLOCK_GROWTH_WORD_SIZES:
+            short_blocks.extend(
+                span for span in self.partition_poem_into_blocks(size)
+                if span != whole_poem
             )
+        lines = [
+            span for span in self.line_spans
+            if span[1] > span[0] and span != whole_poem
+        ]
+        stanzas = [
+            span for span in self.stanza_spans
+            if span[1] > span[0] and span != whole_poem
+        ]
 
-        return self.get_or_fetch_block_translation(
-            0,
-            len(self.original_poem_words),
-            mode=config.BLOCK_TRANSLATION_MODE_FINAL
+        # Weights drift toward larger units as gathering continues, but a
+        # short block is always possible, so the target cannot be timed.
+        line_weight = min(0.55, 0.1 + 0.04 * self.gathering_steps)
+        stanza_weight = min(0.2, max(0.0, 0.03 * (self.gathering_steps - 4))) if stanzas else 0.0
+        short_weight = max(0.25, 1.0 - line_weight - stanza_weight)
+
+        buckets = []
+        weights = []
+        if short_blocks:
+            buckets.append(short_blocks)
+            weights.append(short_weight)
+        if lines:
+            buckets.append(lines)
+            weights.append(line_weight)
+        if stanzas:
+            buckets.append(stanzas)
+            weights.append(stanza_weight)
+
+        if not buckets:
+            return whole_poem
+
+        chosen_bucket = self.random_generator.choices(buckets, weights=weights, k=1)[0]
+        return self.random_generator.choice(chosen_bucket)
+
+    def build_destination_lines(self) -> List[str]:
+        """
+        Split a chosen ending across the poem's lines, if one was given
+
+        Returns:
+            One string per line, or an empty list when the poem has no chosen
+            ending
+        """
+        if not self.final_translation or not self.line_spans:
+            return []
+
+        return self.fit_segments_to_line_count(
+            self.final_translation.split('\n'),
+            len(self.line_spans),
+            [end - start for start, end in self.line_spans]
         )
+
+    def poem_has_arrived(self) -> bool:
+        """
+        True when the poem already reads as its chosen ending
+
+        Without a chosen ending there is nothing to arrive at, so gathering
+        simply continues.
+
+        Returns:
+            Whether the current text matches the destination
+        """
+        if not self.destination_lines:
+            return False
+
+        current_lines = self.fit_segments_to_line_count(
+            self.get_current_transformation_state().split('\n'),
+            len(self.destination_lines)
+        )
+        return [
+            ' '.join(line.split()) for line in current_lines
+        ] == [
+            ' '.join(line.split()) for line in self.destination_lines
+        ]
+
+    def mark_transformation_complete(self) -> None:
+        """Record that the poem now reads as its destination."""
+        self.current_phase = TransformationPhase.COMPLETE
+        if config.DEBUG_MODE:
+            print("✓ Poem transformation complete!")
 
     def translate_and_replace_block(self, start_index: int, end_index: int) -> bool:
         """
@@ -675,8 +629,8 @@ class PoemTransformerEngine:
         Returns:
             True if the poem reads differently now
         """
-        # A trigger that empties one phase's queue goes on to do the next
-        # phase's first block, so the phase is recorded as the work is done.
+        # Recorded so clients can label the change; gathering has no next
+        # phase waiting to steal the trigger.
         self.last_action_phase = self.current_phase
 
         start_index, end_index = self.expand_span_to_whole_phrases(start_index, end_index)
@@ -932,9 +886,8 @@ class PoemTransformerEngine:
         """
         Decide how much licence a block's translation should take
 
-        Short blocks in Phase 2 are still assembling the sentence, so they stay
-        literal. Phase 3's lines are translated as poetry. The finished poem
-        is arrival's job, so nothing here uses the final mode.
+        Short blocks are still assembling the sentence, so they stay literal.
+        A line or more is translated as poetry. Nothing pastes a booked ending.
 
         Args:
             start_index: First word index of the block
@@ -943,7 +896,7 @@ class PoemTransformerEngine:
         Returns:
             One of the keys of config.BLOCK_TRANSLATION_MODES
         """
-        if self.current_phase == TransformationPhase.PHASE_2_GROWING_BLOCKS:
+        if end_index - start_index <= config.LITERAL_BLOCK_MAX_WORDS:
             return config.BLOCK_TRANSLATION_MODE_LITERAL
 
         return config.BLOCK_TRANSLATION_MODE_POETIC
@@ -1007,7 +960,8 @@ class PoemTransformerEngine:
             poem_so_far=self.current_transformation_state,
             whole_poem=self.original_poem,
             mode=mode,
-            current_reading=current_reading
+            current_reading=current_reading,
+            arriving_at=self.final_translation
         )
 
         if not self.ai_translator.validate_block_translation_response(ai_response):
@@ -1186,17 +1140,8 @@ class PoemTransformerEngine:
     def transition_to_phase_2_growing_blocks(self) -> None:
         """Transition from Phase 1 to Phase 2"""
         self.current_phase = TransformationPhase.PHASE_2_GROWING_BLOCKS
-        if not self.block_levels and not self.current_block_queue:
-            self.transition_to_phase_3_arrival()
-            return
         if config.DEBUG_MODE:
-            print("✓ Transitioned to Phase 2: Short Blocks")
-
-    def transition_to_phase_3_arrival(self) -> None:
-        """Transition from Phase 2 to Phase 3"""
-        self.current_phase = TransformationPhase.PHASE_3_ARRIVAL
-        if config.DEBUG_MODE:
-            print("✓ Transitioned to Phase 3: Arrival")
+            print("✓ Transitioned to Phase 2: Gathering")
 
     def get_current_transformation_state(self) -> str:
         """
@@ -1218,35 +1163,51 @@ class PoemTransformerEngine:
 
     def get_transformation_progress_percentage(self) -> float:
         """
-        Calculate progress percentage through full transformation
-        
+        How far the poem has moved, not how many booked steps remain
+
+        Phase 1 is the share of words already visited. After that, if a
+        destination was given, it is the share of lines that already read as
+        that destination. There is no third number that counts down to a paste
+        of the ending.
+
         Returns:
             Progress as percentage (0-100)
         """
         if self.current_phase == TransformationPhase.COMPLETE:
             return 100.0
 
-        if self.total_planned_operations == 0:  # No poem loaded yet
+        total_words = len(self.original_poem_words)
+        if total_words == 0:
             return 0.0
 
-        completed = self.total_planned_operations - self.count_remaining_operations()
-        progress = (completed / self.total_planned_operations) * 100
-        return min(progress, 99.9)  # Cap at 99.9% until complete
+        if self.current_phase == TransformationPhase.PHASE_1_WORD_BY_WORD:
+            visited = total_words - len(self.phase_1_word_queue)
+            return (visited / total_words) * 100.0
+
+        if self.destination_lines:
+            current_lines = self.fit_segments_to_line_count(
+                self.get_current_transformation_state().split('\n'),
+                len(self.destination_lines)
+            )
+            matched = sum(
+                1
+                for current, destination in zip(current_lines, self.destination_lines)
+                if ' '.join(current.split()) == ' '.join(destination.split())
+            )
+            return (matched / len(self.destination_lines)) * 100.0
+
+        return 0.0
 
     def count_remaining_operations(self) -> int:
         """
-        Count the triggers still needed to finish the transformation
+        Words still waiting in Phase 1. After that, nothing is queued.
 
         Returns:
-            Number of queued operations across all phases
+            Remaining Phase 1 words, else 0
         """
-        return (
-            len(self.phase_1_word_queue)
-            + len(self.current_block_queue)
-            + sum(len(level) for level in self.block_levels)
-            + len(self.line_queue)
-            + len(self.arrival_queue)
-        )
+        if self.current_phase == TransformationPhase.PHASE_1_WORD_BY_WORD:
+            return len(self.phase_1_word_queue)
+        return 0
 
     def get_transformation_statistics(self) -> Dict:
         """
@@ -1261,7 +1222,7 @@ class PoemTransformerEngine:
             "total_words": len(self.original_poem_words),
             "total_lines": len(self.line_spans),
             "remaining_operations": self.count_remaining_operations(),
-            "planned_operations": self.total_planned_operations,
+            "planned_operations": None,
             "progress_percentage": self.get_transformation_progress_percentage(),
             "cached_words": self.database_manager.count_cached_word_translations(),
             "cached_phrases": self.database_manager.count_cached_phrase_translations(),
