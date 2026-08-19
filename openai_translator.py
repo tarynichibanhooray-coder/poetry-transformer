@@ -102,19 +102,23 @@ class OpenAITranslator:
         }}
 
         Rules:
+        - The original poem is the authority for meaning. "{source_word}" must
+          still name the same thing after you translate it.
         - "part_of_speech" is the part of speech of "{source_word}" in that line.
-        - "primary_translation" is the one the finished poem should keep. Judge
-          it on the sense the line needs first, then on register and sound in
-          the poem as a whole. It is a choice, not a default: the word a
-          translator would defend.
-        - "synonyms" are the other renderings worth weighing, best first. Give
+        - "primary_translation" is the ordinary equivalent a translator would
+          keep. Judge it on the sense the line needs first, then on register
+          and sound. Prefer the plain word: "fire" for "fuego", not a mood
+          or effect of fire.
+        - "synonyms" are other words for THAT SAME meaning, best first. Give
           every one that is true, up to {config.MAX_SYNONYMS_PER_WORD}. A rich
           word deserves several; do not pad a plain one.
         - Every alternative must be the SAME part of speech as the primary and
           must be substitutable for it in that line with the line still meaning
           what it meant. If it fails that test it is not an alternative, it is
           a different word.
-        - Do NOT offer another sense of the word. If the word is the flower
+        - Do not offer a neighbouring image, sensation, or metaphor. "fuego"
+          is "fire" (and perhaps "flame"), never "glow", "heat", "light", or
+          "blaze" used as a pretty substitute. If the word is the flower
           "rose", do not offer colours such as "pink" or "salmon".
         - Function words carry no such choice. If "{source_word}" is an article,
           determiner, pronoun, preposition, conjunction, auxiliary or particle,
@@ -124,8 +128,21 @@ class OpenAITranslator:
         - Prefer the plain word a poet would use. Do not reach for a formal or
           Latinate word where a common one is what the line says: "tell me",
           not "inform me"; "has", not "possesses".
+        - If the line is a question, "{source_word}" must still work as a
+          question. Spanish "es" in "¿es...?" / "es ...?" is "is" or "is it",
+          never "it's". "It's the same sun" is a statement and it is wrong.
+        - Never leave "primary_translation" empty. Every source word must stay
+          visible. A noun, verb, or adjective that disappears has not been
+          translated.
+        - Keep the word's punctuation. If "{source_word}" ends with ? ! . or a
+          comma, the rendering must keep that mark.
+        - Do not offer the same rendering twice. Every synonym must differ
+          from the primary and from every other synonym.
         {self.describe_word_arrival_rule(arriving_at)}
-        - Keep each rendering concise (1-2 words max).
+        - Keep each rendering concise (1-2 words max). If "{source_word}" is
+          not itself an article, do NOT include "the" or "a" in the rendering.
+          "el" / "la" is a different word and will already be "the". "rosa" is
+          "rose", not "the rose"; "mismo" is "same", not "the same".
 
         Return ONLY the JSON object, no additional text.
         """
@@ -152,7 +169,10 @@ class OpenAITranslator:
             "          primary. The poem is on its way there, and a word that will\n"
             "          only be undone later was never the best choice. Where the\n"
             "          finished translation recasts the line and no word of it\n"
-            "          answers to this one, choose on your own judgement."
+            "          answers to this one, give the ordinary equivalent of THIS\n"
+            "          word anyway. Never drop it. Spanish \"tiene\" in \"sólo tiene\n"
+            "          ese vestido?\" is \"has\" or \"wears\", even if the finished\n"
+            "          line says \"is that her only dress?\" and has no separate verb."
         )
 
     def strip_synonyms_from_function_words(self, response: Dict) -> Dict:
@@ -188,7 +208,8 @@ class OpenAITranslator:
         current_reading: List[str] = None,
         arriving_at: str = None,
         returning: bool = False,
-        original_language: str = None
+        original_language: str = None,
+        already_used: List[str] = None
     ) -> Dict:
         """
         Request translation of a block of the poem, one line at a time
@@ -214,6 +235,8 @@ class OpenAITranslator:
                 original language
             original_language: Name of the language the poem was written in,
                 used when returning so the original is named correctly
+            already_used: Readings already shown for this passage; repeating
+                one is forbidden
 
         Returns:
             Dictionary with 'lines', a list the same length as source_lines,
@@ -255,6 +278,8 @@ class OpenAITranslator:
         {current_section}
 
         {self.describe_block_context(mode, poem_so_far, whole_poem, is_whole_poem, arriving_at, returning, original_language or source_language)}
+
+        {self.describe_already_used(already_used)}
 
         Return a JSON object with exactly this format:
         {self.describe_block_response_format(settings['draft_count'], line_placeholders)}
@@ -346,8 +371,12 @@ class OpenAITranslator:
 
         return (
             f"A poem is being translated from {source_language} into "
-            f"{target_language}, passage by passage, and each pass tries to "
-            f"leave it better than it found it. You are working on one passage."
+            f"{target_language}, passage by passage. You are working on one "
+            f"passage. If the current reading already holds the original well, "
+            f"leave it. Change it only when you can name a real defect and the "
+            f"new line is an improvement, not a restlessness. Write literary "
+            f"{target_language}: a line someone would print, not a crib, not a "
+            f"contraction that turns a question into a statement."
         )
 
     def describe_block_context(
@@ -387,8 +416,9 @@ class OpenAITranslator:
 
         if whole_poem:
             sections.append(
-                'The passage sits in this poem, given here in the original so '
-                f'you can see what surrounds it:\n"""\n{whole_poem}\n"""'
+                'The whole original poem. It is the authority for meaning: '
+                'every image in your passage must still be the image this '
+                f'poem wrote.\n"""\n{whole_poem}\n"""'
             )
 
         if poem_so_far:
@@ -410,13 +440,36 @@ class OpenAITranslator:
                 )
             else:
                 sections.append(
-                    'A translation this poem may come to rest on. Move toward it '
-                    'when that would be a true improvement of THIS passage. Do not '
-                    'copy it out of turn, and do not pull in lines that are not '
-                    f'part of the passage:\n"""\n{arriving_at}\n"""'
+                    'A translation this poem may come to rest on. Move THIS '
+                    'passage toward the matching part of it. If you are '
+                    'rewriting a whole line and that line of the destination '
+                    'is the best reading of this line, write it. Do not pull '
+                    'in lines that are not part of the passage:\n'
+                    f'"""\n{arriving_at}\n"""'
                 )
 
         return '\n\n'.join(sections)
+
+    def describe_already_used(self, already_used: List[str] = None) -> str:
+        """
+        Forbid phrasings the reader has already seen
+
+        Args:
+            already_used: Normalized readings that must not come back
+
+        Returns:
+            A prompt section, or an empty string
+        """
+        if not already_used:
+            return ''
+
+        listed = '\n'.join(f'- "{reading}"' for reading in already_used[:24])
+        return (
+            "These exact readings have already been on the page. Do not "
+            "return the same sentence. You may and should keep the original's "
+            "nouns and images: if the original says fire, write fire again "
+            f"rather than swapping in glow or heat.\n{listed}"
+        )
 
     def describe_current_reading(self, current_reading: List[str] = None) -> str:
         """
@@ -465,46 +518,52 @@ class OpenAITranslator:
         if not current_reading:
             return ''
 
+        defects = ', '.join(config.GATHER_REAL_DEFECTS)
+
         if returning:
             language = target_language or 'the original language'
+            defects = ', '.join(config.RETURN_REAL_DEFECTS)
             return (
-                f"- You are working this passage back into {language}. Keep "
-                f"every word that is already {language} and already right.\n"
-                "        - Change only what you can honestly move further into "
-                f"{language}: a truer sense, a phrase that a {language} poet\n"
-                "          would write, a rhythm closer to the original's. "
-                "Rewriting English as different English is not a return.\n"
-                "        - Do not paste the original poem. Translate the passage "
-                "in front of you, even when you can see what it used to be.\n"
-                "        - Say in \"improvement\", in a few words, what you "
-                "moved back.\n"
-                "        - If this passage cannot honestly move further yet, "
-                "set \"unchanged\" to true and repeat it in \"lines\"."
+                f"- This passage is on its way back into {language}. English "
+                "that already reads well is still English: it is not done.\n"
+                f"        - Translate the passage in front of you into {language}. "
+                "Set \"defect\" to still_english or closer_to_source whenever "
+                f"any of it is still not {language}.\n"
+                "        - Keep only words that are already "
+                f"{language} and already right. Do not rewrite {language} as "
+                "different English.\n"
+                "        - Do not paste the original poem. Translate what is "
+                "here, even when you can see what it used to be.\n"
+                f"        - Set \"defect\" to one of: {defects}. Set "
+                "\"unchanged\" to true only if this passage is already "
+                f"{language}.\n"
+                "        - Say in \"improvement\" what you moved back."
             )
 
         shared = (
-            "- You are not translating from scratch. The reading above is the "
-            "work of\n          earlier passes and some of it is already right. "
-            "Keep every word that is\n          already the best choice.\n"
-            "        - Change only what you can make better, and be able to say "
-            "what is better\n          about it: a truer sense, a phrase that "
-            "reads as though written rather\n          than translated, a rhythm "
-            "closer to the original's, an ending that\n          lands. Changing "
-            "a word for a word of the same worth makes the poem\n          "
-            "restless, not better.\n"
-            "        - Say in \"improvement\", in a few words, what you bettered."
+            "- Decide first: is the current reading already good? If it "
+            "already holds the\n          original's meaning, set \"unchanged\" "
+            "to true, \"defect\" to \"none\", and repeat\n          the current "
+            "reading in \"lines\". Leaving it is the correct answer.\n"
+            "        - Change only when you can name a real defect in the "
+            "current reading:\n          "
+            f"{defects}. \"More poetic\", \"nicer rhythm\", or \"has not been "
+            "used yet\"\n          is not a defect. A word that already names "
+            "the right thing (fire for\n          fuego) may become another "
+            "word later only if that word is truer to THIS\n          line of "
+            "the original — set defect to closer_to_original and say why.\n"
+            "        - The original passage above is the authority for "
+            "meaning. A better line\n          still names the same things. "
+            "Replacing fire with glow is forgetting the\n          poem, not "
+            "improving it.\n"
+            "        - Say in \"improvement\" what you bettered, or that the "
+            "reading was already good."
         )
 
         if is_final:
             return shared
 
-        return (
-            f"{shared}\n"
-            "        - If the reading above is already the best this passage can "
-            "be, set\n          \"unchanged\" to true and repeat it in \"lines\". "
-            "Leaving good work alone\n          is a real answer and it is better "
-            "than churning it."
-        )
+        return shared
 
     def describe_block_response_format(self, draft_count: int, line_placeholders: str) -> str:
         """
@@ -521,8 +580,10 @@ class OpenAITranslator:
             return (
                 '{\n'
                 f'            "lines": [{line_placeholders}],\n'
-                '            "improvement": "what this pass makes better",\n'
-                '            "unchanged": false\n'
+                '            "defect": "none | wrong_sense | grammar | crib | '
+                'dropped_image | closer_to_original | closer_to_destination",\n'
+                '            "improvement": "what this pass makes better, or already good",\n'
+                '            "unchanged": true\n'
                 '        }'
             )
 
@@ -530,6 +591,8 @@ class OpenAITranslator:
             '{\n'
             f'            "drafts": [{", ".join(f"[{line_placeholders}]" for _ in range(draft_count))}],\n'
             f'            "lines": [{line_placeholders}],\n'
+            '            "defect": "none | wrong_sense | grammar | crib | '
+            'dropped_image | closer_to_original | closer_to_destination",\n'
             '            "improvement": "what this pass makes better"\n'
             '        }'
         )
@@ -550,9 +613,10 @@ class OpenAITranslator:
         """
         if mode == config.BLOCK_TRANSLATION_MODE_LITERAL:
             stay_close = (
-                "Stay close to the wording of the passage in front of you."
+                "Stay close to the wording of the passage in front of you, "
+                "and to what the original poem meant."
                 if returning else
-                "Stay close to the wording of the original."
+                "Stay close to the wording and the meaning of the original."
             )
             return f"""- Make the fragment grammatical {target_language}. Do not complete a
           thought the fragment does not contain, and do not pull in words from
@@ -570,11 +634,25 @@ class OpenAITranslator:
           the poem had been composed in {target_language}, not translated into it.
         - Use natural spoken word order. No inversions or constructions a
           {target_language} speaker would not say, no archaism, no padding.
+        - Keep every concrete noun, verb, and image the original names. You
+          may change grammar and word order; you may not change the thing
+          named. "fuego" remains fire, not glow. "sol" remains sun, not light.
         - Keep the image and what the poem is doing. You need not keep the
           grammar or the order of the original.
         - Keep a question a question, and keep the poem's address: if the
           original speaks to someone or asks something of them, so must the
-          translation."""
+          translation.
+        - Never write "it's" for a question. "es el mismo sol...?" is
+          "Is it the same sun...?", never "It's the same sun...".
+        - Capitalize the first word of the passage when it begins a sentence
+          or a line. Do not drop punctuation: keep ?, !, commas and full stops
+          that belong to the excerpt.
+        - Translate ONLY the excerpt. Do not finish the rest of the line or
+          pull in words that sit after the excerpt. A leftover "of its fire"
+          after you already wrote "another fire?" is an error.
+        - Do not repeat an earlier sentence of this poem. Repeating a noun
+          from the original (fire, rose, sun) is required when that is what
+          the original said."""
 
         if mode != config.BLOCK_TRANSLATION_MODE_FINAL:
             return f"""{shared_poetic_rules}
@@ -614,12 +692,20 @@ class OpenAITranslator:
         """
         if poetic:
             return (
-                f"You are a poet who translates into {target_language}. Your "
-                f"translations are read as poems, not as cribs. Always respond "
-                f"with valid JSON only."
+                f"You are a translator of poems into {target_language}. Stay "
+                f"faithful to what the original names and means; literary "
+                f"{target_language} is how the line is said, not a new set of "
+                f"images. A question stays a question: write \"Is it\", never "
+                f"\"it's\", when the original asks. Keep punctuation. Capitalize "
+                f"the first word of a line that begins a sentence. Always "
+                f"respond with valid JSON only."
             )
 
-        return "You are a professional translator. Always respond with valid JSON only."
+        return (
+            "You are a professional translator. Stay faithful to the original "
+            "word's meaning; do not offer neighbouring images or effects. "
+            "Always respond with valid JSON only."
+        )
 
     def send_message_to_openai_and_parse_json(
         self,

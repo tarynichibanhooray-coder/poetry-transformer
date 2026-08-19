@@ -2,35 +2,87 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Poetry Transformer — Live</title>
+  <title>Poetry Transformer</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    body { font-family: system-ui, Arial; margin: 2rem; }
-    pre { background:#f7f7f7; padding:1rem; border-radius:6px; white-space:pre-wrap; }
-    #status { margin-bottom:1rem; }
-    button { padding:0.5rem 1rem; }
-    #next-poem { font-size: 1.25rem; line-height: 1; padding: 0.4rem 0.85rem; }
-
-    .languages { font-size: 0.9rem; font-weight: normal; color: #555; }
-
-    /* Per-word spans and cycling highlight */
-    .word { display: inline-block; padding: 0 2px; }
-
-    /* Pulsing highlight */
-    .cycling { background: #fff3a7; border-radius: 3px; animation: pulse 1.2s infinite ease-in-out; }
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(255,243,167,0.95); }
-      40% { box-shadow: 0 0 10px 6px rgba(255,243,167,0.35); }
-      100% { box-shadow: 0 0 0 0 rgba(255,243,167,0); }
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f3efe6;
+      font-family: Georgia, "Times New Roman", serif;
+      color: #1a1a1a;
     }
 
-    /* Screen-reader only element */
+    #poem {
+      margin: 0;
+      padding: 8vh 8vw;
+      max-width: 18em;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(1.85rem, 4.6vw, 3.4rem);
+      line-height: 1.45;
+      text-align: center;
+      white-space: pre-wrap;
+      background: none;
+      transition: color 0.7s ease;
+    }
+
+    .word {
+      display: inline-block;
+      padding: 0 0.04em;
+      transition: opacity 0.9s ease, color 0.7s ease;
+    }
+
+    #next-poem {
+      position: fixed;
+      right: 1.25rem;
+      bottom: 1.25rem;
+      width: 2.75rem;
+      height: 2.75rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      opacity: 0.28;
+      font: inherit;
+      font-size: 1.75rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #next-poem:hover,
+    #next-poem:focus {
+      opacity: 0.7;
+      outline: none;
+    }
+
+    #intro {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(243, 239, 230, 0.92);
+      z-index: 2;
+    }
+    #intro[hidden] { display: none; }
+    #intro p {
+      margin: 0;
+      max-width: 14em;
+      font-size: clamp(1.15rem, 2.4vw, 1.6rem);
+      line-height: 1.4;
+      text-align: center;
+    }
+
     .sr-only {
       position: absolute !important;
       height: 1px; width: 1px;
       overflow: hidden;
       clip: rect(1px, 1px, 1px, 1px);
-      white-space: nowrap; /* added line */
+      white-space: nowrap;
       border: 0;
       padding: 0;
       margin: -1px;
@@ -38,84 +90,68 @@
   </style>
 </head>
 <body>
-  <h1>Poetry Transformer — Live</h1>
-  <div id="status">Connecting...</div>
-  <div>
-    <button id="trigger">Trigger (Space)</button>
-    <button id="next-poem" title="Next poem">→</button>
-    <a href="/add.html">Add a poem</a>
+  <div id="intro" role="dialog" aria-modal="true" aria-labelledby="intro-text">
+    <p id="intro-text">Select the spacebar to trigger a translation.</p>
   </div>
-  <h2>Current Poem <span id="languages" class="languages"></span> <span id="phase" class="languages"></span></h2>
-  <pre id="poem">(empty)</pre>
 
-  <!-- Live region for screen readers: will announce cycling/snapshots -->
+  <pre id="poem"></pre>
+  <button id="next-poem" type="button" title="Next poem" aria-label="Next poem">→</button>
+
   <div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
   <script>
-    const statusEl = document.getElementById('status');
     const poemEl = document.getElementById('poem');
-    const triggerBtn = document.getElementById('trigger');
     const nextBtn = document.getElementById('next-poem');
+    const introEl = document.getElementById('intro');
     const srLive = document.getElementById('sr-live');
 
     const base = window.location.origin;
-    const BLOCK_HIGHLIGHT_MS = 1500;
+    const FADE_MS = 900;
+    const COLOR_MS = 700;
+    const POEM_COLORS = [
+      '#1d4ed8', '#9f1239', '#0f766e', '#b45309',
+      '#6d28d9', '#be185d', '#166534', '#1e3a8a',
+      '#c2410c', '#155e75', '#7c2d12', '#4c1d95'
+    ];
+
     const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
     const ws = new WebSocket(wsProto + '://' + location.host + '/ws');
 
-    ws.onopen = () => { statusEl.textContent = 'Connected'; };
-    ws.onclose = () => { statusEl.textContent = 'Disconnected'; };
-    ws.onerror = (e) => { statusEl.textContent = 'WebSocket error'; console.error(e); };
+    let poemColor = POEM_COLORS[0];
+    let play = Promise.resolve();
+    let introOpen = true;
 
     function escapeHtml(s) {
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
-    const languagesEl = document.getElementById('languages');
-    const phaseEl = document.getElementById('phase');
-
-    const PHASE_LABELS = {
-      PHASE_1_WORD_BY_WORD: 'Phase 1 · word by word',
-      PHASE_2_GROWING_BLOCKS: 'Phase 2 · gathering',
-      PHASE_3_ARRIVAL: 'Phase 2 · gathering',
-      RETURNING_TO_SOURCE: 'Returning',
-      COMPLETE: 'At rest'
-    };
-
-    function phaseLabel(snapshot) {
-      const phase = snapshot.phase_after || snapshot.phase;
-      if (phase === 'RETURNING_TO_SOURCE') {
-        const language = snapshot.source_language;
-        return language ? `Returning · toward ${language}` : 'Returning';
-      }
-      return PHASE_LABELS[phase] || phase;
+    function wait(ms) {
+      return new Promise(resolve => setTimeout(resolve, ms));
     }
 
-    function updateLanguages(snapshot) {
-      if (!snapshot) return;
-      if (snapshot.source_language) {
-        languagesEl.textContent = `${snapshot.source_language} → ${snapshot.target_language}`;
-      }
-      // phase_after is where the poem now stands, which is what the header
-      // reports; the event's own phase describes the change it carried.
-      const phase = snapshot.phase_after || snapshot.phase;
-      if (phase) {
-        phaseEl.textContent = phaseLabel(snapshot);
-      }
+    function pickColor(previous) {
+      const choices = POEM_COLORS.filter(color => color !== previous);
+      return choices[Math.floor(Math.random() * choices.length)] || POEM_COLORS[0];
     }
 
-    // Matches the engine's word indexing, which ignores empty tokens.
-    function splitWords(stateText) {
-      return (stateText || '').split(/\s+/).filter(Boolean);
+    function announce(text) {
+      if (!text) return;
+      srLive.textContent = '';
+      setTimeout(() => { srLive.textContent = text; }, 50);
     }
 
-    // Build spans from the server's word slots. One slot per original word, so
-    // data-index matches the engine's index even when a slot holds a multi-word
-    // translation like "tell me".
-    function renderFromSlots(words, separators) {
+    function wordEl(index) {
+      return poemEl.querySelector(`.word[data-index="${index}"]`);
+    }
+
+    function filledIndices(words) {
       const filled = [];
-      words.forEach((word, index) => { if (word) filled.push(index); });
+      (words || []).forEach((word, index) => { if (word) filled.push(index); });
+      return filled;
+    }
 
+    function markupFromSlots(words, separators) {
+      const filled = filledIndices(words);
       return filled.map((index, position) => {
         const span = `<span class="word" data-index="${index}">${escapeHtml(words[index])}</span>`;
         if (position + 1 >= filled.length) return span;
@@ -124,9 +160,7 @@
       }).join('');
     }
 
-    // Fallback for events without slot data: split on whitespace. Indices can
-    // drift from the engine's once a translation spans multiple words.
-    function renderFromText(stateText) {
+    function markupFromText(stateText) {
       let wordIndex = 0;
       return (stateText || '').split('\n').map(line => {
         return line.split(/\s+/).filter(Boolean).map(word => {
@@ -137,103 +171,170 @@
       }).join('\n');
     }
 
-    function renderState(stateText, highlight = null, srAnnouncement = null, words = null, separators = null) {
+    function paintPoem(color) {
+      poemColor = color;
+      poemEl.style.color = color;
+      poemEl.querySelectorAll('.word').forEach(el => { el.style.color = ''; });
+    }
+
+    function renderSlots(words, separators, stateText) {
       poemEl.innerHTML = Array.isArray(words)
-        ? renderFromSlots(words, separators || [])
-        : renderFromText(stateText);
+        ? markupFromSlots(words, separators || [])
+        : markupFromText(stateText);
+    }
 
-      // A block rewrite touches a span, a synonym cycle a single word.
-      const indices = (Array.isArray(highlight) ? highlight : [highlight])
-        .filter(Number.isFinite);
+    async function fadeOpacity(elements, opacity) {
+      const els = elements.filter(Boolean);
+      if (!els.length) return;
+      els.forEach(el => { el.style.opacity = String(opacity); });
+      await wait(FADE_MS);
+    }
 
-      if (indices.length) {
-        indices.forEach(index => {
-          const el = poemEl.querySelector(`.word[data-index="${index}"]`);
-          if (el) el.classList.add('cycling');
+    async function showChangedWords(indices, words, separators, stateText, color, { recolorPoem }) {
+      const existing = indices.map(wordEl);
+      const canUpdateInPlace = existing.every(Boolean) && Array.isArray(words);
+
+      await fadeOpacity(existing, 0);
+
+      if (canUpdateInPlace) {
+        existing.forEach((el, i) => {
+          const index = indices[i];
+          el.textContent = words[index] || '';
+          el.style.color = color;
         });
       } else {
-        // ensure no cycling classes remain
-        poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
+        renderSlots(words, separators, stateText);
+        paintPoem(recolorPoem ? color : poemColor);
+        indices.forEach(index => {
+          const el = wordEl(index);
+          if (el) {
+            el.style.opacity = '0';
+            el.style.color = color;
+          }
+        });
+        // Let the browser apply the hidden state before fading in.
+        await wait(30);
       }
 
-      // Announce for screen readers if requested
-      if (srAnnouncement) {
-        // Small delay to ensure polite announcements are picked up
-        srLive.textContent = '';
-        setTimeout(() => { srLive.textContent = srAnnouncement; }, 50);
+      await fadeOpacity(indices.map(wordEl), 1);
+
+      if (recolorPoem) {
+        paintPoem(color);
+        await wait(COLOR_MS);
       }
+    }
+
+    function changedIndices(previousWords, nextWords, fallback) {
+      if (!Array.isArray(previousWords) || !Array.isArray(nextWords)) return fallback;
+      const indices = [];
+      const length = Math.max(previousWords.length, nextWords.length);
+      for (let index = 0; index < length; index += 1) {
+        if ((previousWords[index] || '') !== (nextWords[index] || '')) {
+          indices.push(index);
+        }
+      }
+      return indices.length ? indices : fallback;
+    }
+
+    let lastWords = [];
+
+    function enqueue(event) {
+      play = play.then(() => present(event)).catch(err => console.error(err));
+    }
+
+    async function present(event) {
+      const snapshot = event.context_snapshot || {};
+      const words = Array.isArray(event.words) ? event.words : null;
+      const separators = event.separators;
+      const stateText = event.new_state;
+      if (stateText === undefined && !words) return;
+
+      const isIntermediate = Boolean(event.intermediate) && Number.isFinite(snapshot.word_index);
+      const isNewPoem = event.reason === 'poem_loaded' || event.reason === 'initial_state';
+      const nextColor = pickColor(poemColor);
+
+      if (isNewPoem) {
+        const hadPoem = poemEl.childNodes.length > 0;
+        if (hadPoem) await fadeOpacity([...poemEl.querySelectorAll('.word')], 0);
+        renderSlots(words, separators, stateText);
+        paintPoem(nextColor);
+        poemEl.querySelectorAll('.word').forEach(el => { el.style.opacity = hadPoem ? '0' : '1'; });
+        if (hadPoem) {
+          await wait(30);
+          await fadeOpacity([...poemEl.querySelectorAll('.word')], 1);
+        }
+        lastWords = words ? words.slice() : [];
+        announce(isNewPoem && event.reason === 'poem_loaded' ? 'Next poem.' : null);
+        return;
+      }
+
+      let indices = [];
+      if (isIntermediate) {
+        indices = [snapshot.word_index];
+      } else {
+        const changed = changedIndices(lastWords, words, []);
+        if (changed.length === 0) {
+          lastWords = words ? words.slice() : lastWords;
+          return;
+        }
+        indices = changed;
+      }
+
+      await showChangedWords(indices, words, separators, stateText, nextColor, {
+        recolorPoem: !isIntermediate
+      });
+
+      lastWords = words ? words.slice() : [];
+
+      if (isIntermediate) {
+        announce(`Cycling word ${snapshot.word_index + 1}`);
+      } else if (Number.isFinite(snapshot.word_index)) {
+        announce(`Word ${snapshot.word_index + 1} settled`);
+      } else {
+        announce('Poem updated.');
+      }
+    }
+
+    function dismissIntro() {
+      if (!introOpen) return;
+      introOpen = false;
+      introEl.hidden = true;
     }
 
     ws.onmessage = (evt) => {
       try {
         const event = JSON.parse(evt.data);
-        if (!event) return;
-
-        updateLanguages(event.context_snapshot);
-
-        // Prefer the server's slot list; fall back to splitting the text.
-        const wordAt = (index) => Array.isArray(event.words)
-          ? (event.words[index] || '')
-          : (splitWords(event.new_state)[index] || '');
-
-        // Intermediate synonym cycle events have `intermediate: true` and a context_snapshot.word_index
-        if (event.intermediate && event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
-          const idx = event.context_snapshot.word_index;
-          const sr = `Cycling word ${idx + 1}: ${wordAt(idx)}`;
-          renderState(event.new_state, idx, sr, event.words, event.separators);
-          return;
-        }
-
-        // A block rewrite from phase 2 or 3: flash the span that changed
-        const snapshot = event.context_snapshot || {};
-        if (event.new_state !== undefined && Number.isFinite(snapshot.block_start)) {
-          const span = [];
-          for (let i = snapshot.block_start; i < snapshot.block_end; i += 1) span.push(i);
-          renderState(event.new_state, span, 'Block rewritten.', event.words, event.separators);
-          setTimeout(() => {
-            poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
-          }, BLOCK_HIGHLIGHT_MS);
-          return;
-        }
-
-        // Normal final events: if we have a word index in context_snapshot, announce settled word
-        if (event.new_state !== undefined) {
-          let sr = null;
-          if (typeof snapshot.word_index !== 'undefined') {
-            const idx = snapshot.word_index;
-            sr = `Word ${idx + 1} settled to ${wordAt(idx)}`;
-          } else {
-            sr = 'Poem updated.';
-          }
-          renderState(event.new_state, null, sr, event.words, event.separators);
-        }
-
-      } catch (err) { console.error('Invalid event', err); }
+        if (event) enqueue(event);
+      } catch (err) {
+        console.error('Invalid event', err);
+      }
     };
 
     async function sendTrigger() {
       try {
         await fetch(base + '/trigger', { method: 'POST' });
-      } catch (err) { console.error('Trigger failed', err); }
+      } catch (err) {
+        console.error('Trigger failed', err);
+      }
     }
 
-    triggerBtn.addEventListener('click', sendTrigger);
-
-    // Spacebar handling
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Space') {
-        e.preventDefault();
+      if (e.code !== 'Space') return;
+      e.preventDefault();
+      if (introOpen) {
+        dismissIntro();
         sendTrigger();
+        return;
       }
+      sendTrigger();
     });
 
+    introEl.addEventListener('click', dismissIntro);
+
     nextBtn.addEventListener('click', async () => {
+      dismissIntro();
       try {
-        const response = await fetch(base + '/next_poem', { method: 'POST' });
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}));
-          statusEl.textContent = detail.detail || 'No other poems yet';
-        }
+        await fetch(base + '/next_poem', { method: 'POST' });
       } catch (err) {
         console.error('Next poem failed', err);
       }
