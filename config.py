@@ -125,10 +125,70 @@ STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 # TRANSFORMATION PHASE CONFIGURATION
 # ============================================================================
 
-# Phase durations (number of sensor triggers per phase)
-PHASE_1_WORD_BY_WORD_TRIGGERS = None  # None = all words
-PHASE_2_PAIR_TRIGGERS = None  # None = all pairs
-PHASE_3_PHRASE_TRIGGERS = None  # None = all phrases
+# The middle of the transformation is short blocks of this many words, staying
+# inside a line. Anything larger — a line, a stanza — belongs to Phase 3, so
+# the poem cannot jump from a pair of words to the whole page in one pass.
+BLOCK_GROWTH_WORD_SIZES = [2, 3]
+
+# Phase 3 rewrites the poem's own units, in this order, before the ending
+# arrives a line at a time. Units that work out as the whole poem are dropped;
+# that is what arrival is for.
+BLOCK_GROWTH_STRUCTURES = ["line", "stanza"]
+
+# How many times the poem is worked over at each of the larger block sizes.
+# Phase 2's two- and three-word blocks are literal and have one answer, so they
+# are visited once. Raise this only if you add larger sizes back into Phase 2.
+BLOCK_REVISION_PASSES = 1
+
+# Blocks up to this many words are still assembling the sentence, so they are
+# translated literally. Anything longer is translated as poetry.
+LITERAL_BLOCK_MAX_WORDS = 3
+
+# A revision can come back reading exactly as it did before, which would leave
+# the viewer's trigger with nothing to show. The trigger moves on to the next
+# block instead, up to this many times, rather than calling the API all day.
+MAX_BLOCKS_PER_TRIGGER = 3
+
+# How each kind of block is translated. A two-word block wants the most likely
+# wording, so it runs cold; the closing pass over the whole poem wants room to
+# find a phrasing worth reading, so it runs warm and writes several drafts
+# before choosing between them.
+BLOCK_TRANSLATION_MODE_LITERAL = "literal"
+BLOCK_TRANSLATION_MODE_POETIC = "poetic"
+BLOCK_TRANSLATION_MODE_FINAL = "final"
+
+BLOCK_TRANSLATION_MODES = {
+    BLOCK_TRANSLATION_MODE_LITERAL: {
+        "temperature": 0.2,
+        "max_tokens": 600,
+        "draft_count": 1,
+    },
+    BLOCK_TRANSLATION_MODE_POETIC: {
+        "temperature": 0.6,
+        "max_tokens": 900,
+        "draft_count": 1,
+    },
+    BLOCK_TRANSLATION_MODE_FINAL: {
+        "temperature": 0.85,
+        "max_tokens": 2000,
+        "draft_count": 3,
+    },
+}
+
+# Every pass over a block is asked to improve how the poem currently reads,
+# not to translate the source afresh, so its answer depends on the state of the
+# poem at that moment. A cached answer would be an answer to a different
+# question, which is why the phrase cache is off. Turning it on trades honesty
+# for a lower bill.
+CACHE_BLOCK_TRANSLATIONS = False
+
+# Set to an integer to replay the same random order every run, which is useful
+# when comparing two prompt versions on the same poem. Unset means a fresh
+# order each time the poem is loaded.
+_transformation_random_seed = os.getenv("TRANSFORMATION_RANDOM_SEED")
+TRANSFORMATION_RANDOM_SEED = (
+    int(_transformation_random_seed) if _transformation_random_seed else None
+)
 
 # ============================================================================
 # DEBUG CONFIGURATION

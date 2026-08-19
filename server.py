@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -7,15 +7,11 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
+import random
 
 import config
 
-from poem_transformer_engine import (
-    PoemTransformerEngine,
-    TransformationPhase,
-    join_words_with_separators,
-    split_words_and_separators,
-)
+from poem_transformer_engine import PoemTransformerEngine, TransformationPhase
 
 
 config.validate_required_settings()
@@ -71,6 +67,8 @@ app.add_middleware(
 manager = ConnectionManager()
 engine = PoemTransformerEngine()
 sequence_index = 1
+# The poem currently on screen, so "next" can walk the library.
+current_poem_id = None
 
 # Synonym cycling config
 SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "1.0"))
@@ -78,6 +76,87 @@ LOG_INTERMEDIATE_SYNONYMS = os.environ.get("LOG_INTERMEDIATE_SYNONYMS", "false")
 
 # Lock to serialize synonym cycles so they don't overlap
 _cycle_lock = asyncio.Lock()
+
+OPENING_POEM = {
+    "title": "Libro de las preguntas",
+    "raw_text": "Dime, la rosa está desnuda\no sólo tiene ese vestido?",
+    "final_translation": "Tell me, is the rose naked\nor is that her only dress?",
+    "source_language": config.SOURCE_LANGUAGE,
+    "source_language_code": config.SOURCE_LANGUAGE_CODE,
+    "target_language": config.TARGET_LANGUAGE,
+    "target_language_code": config.TARGET_LANGUAGE_CODE,
+}
+
+
+def _stage_stored_poem(stored_poem: Dict, broadcast: bool = True) -> Dict:
+    """Initialize the engine from a saved poem, optionally telling clients."""
+    global current_poem_id
+
+    language_pair = {
+        "source_language": stored_poem.get("source_language") or engine.source_language,
+        "source_language_code": stored_poem.get("source_language_code") or engine.source_language_code,
+        "target_language": stored_poem.get("target_language") or engine.target_language,
+        "target_language_code": stored_poem.get("target_language_code") or engine.target_language_code,
+    }
+
+    engine.initialize_poem_with_text(
+        stored_poem["raw_text"],
+        final_translation=stored_poem.get("final_translation"),
+        **language_pair
+    )
+    current_poem_id = stored_poem["id"]
+
+    if broadcast:
+        event = {
+            "sequence_index": 0,
+            "timestamp": None,
+            "unit_level": "poem",
+            "unit_path": None,
+            "previous_state": None,
+            **_render_snapshot(),
+            "reason": "poem_loaded",
+            "confidence": 1.0,
+            "alternatives": [],
+            "triggered_by_context": False,
+            "context_snapshot": {
+                "total_words": len(engine.original_poem_words),
+                "poem_id": current_poem_id,
+                "phase": engine.get_current_phase().name,
+                **language_pair
+            }
+        }
+        _append_event_to_jsonl(event)
+        asyncio.create_task(_broadcast_event(event))
+
+    return {"status": "ok", "poem_id": current_poem_id, **language_pair}
+
+
+def _ensure_opening_poem() -> None:
+    """Put a poem on stage as soon as the server starts, with no click required.
+
+    A random saved poem if the library has any; otherwise the default rose
+    couplet, which is stored so Next has something to walk.
+    """
+    poems = engine.database_manager.retrieve_all_poem_entries()
+    if not poems:
+        poem_id = engine.database_manager.store_or_update_poem_entry(
+            raw_text=OPENING_POEM["raw_text"],
+            title=OPENING_POEM["title"],
+            final_translation=OPENING_POEM["final_translation"],
+            source_language=OPENING_POEM["source_language"],
+            source_language_code=OPENING_POEM["source_language_code"],
+            target_language=OPENING_POEM["target_language"],
+            target_language_code=OPENING_POEM["target_language_code"],
+        )
+        stored = engine.database_manager.retrieve_poem_entry_by_id(poem_id)
+        if stored:
+            _stage_stored_poem(stored, broadcast=False)
+        return
+
+    _stage_stored_poem(random.choice(poems), broadcast=False)
+
+
+_ensure_opening_poem()
 
 
 class LoadPoemRequest(BaseModel):
@@ -87,6 +166,9 @@ class LoadPoemRequest(BaseModel):
     source_language_code: Optional[str] = None
     target_language_code: Optional[str] = None
     stanza_delimiter: Optional[str] = None
+    # The translation the poem should come to rest on. Left out, the closing
+    # pass writes its own.
+    final_translation: Optional[str] = None
 
 
 def _resolve_language(code: Optional[str], supported: List[dict], label: str) -> Optional[dict]:
@@ -118,6 +200,22 @@ def _current_language_pair() -> Dict[str, str]:
     }
 
 
+def _render_snapshot(words: List[str] = None) -> Dict:
+    """Slot-aligned rendering data for clients.
+
+    The state string alone is ambiguous once a slot holds a multi-word
+    translation, because splitting it on whitespace no longer lines up with
+    word indices. Sending the slots lets a client map a word index to the
+    exact span it should highlight.
+    """
+    words = engine.current_words if words is None else words
+    return {
+        "new_state": engine.rebuild_transformation_state(words),
+        "words": list(words),
+        "separators": list(engine.word_separators),
+    }
+
+
 def _append_event_to_jsonl(event: dict) -> None:
     try:
         with OUTPUT_JSONL_PATH.open("a", encoding="utf-8") as fh:
@@ -142,10 +240,19 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         # Nothing to do — out of range
         return
 
+    # The phase this change belongs to. Settling the last word moves the engine
+    # on to Phase 2, so reading it afterwards would mislabel the event.
+    acting_phase = engine.get_current_phase().name
+
     original_word = engine.original_poem_words[word_index]
 
-    # Fetch translation and synonyms (may populate cache)
-    translation_data = engine.get_or_fetch_word_translation_with_synonyms(original_word)
+    # Fetch translation and synonyms (may populate cache). The call is
+    # blocking, so it runs off the event loop to keep broadcasts flowing.
+    translation_data = await asyncio.to_thread(
+        engine.get_or_fetch_word_translation_with_synonyms,
+        original_word,
+        engine.get_original_line_for_word_index(word_index)
+    )
     synonyms_list = translation_data.get('synonyms') or []
     primary = translation_data.get('target_word') or translation_data.get('primary_translation') or (synonyms_list[0] if synonyms_list else original_word)
 
@@ -156,22 +263,11 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         if s not in seen:
             dedup_synonyms.append(s)
             seen.add(s)
-    if primary not in seen:
-        # ensure primary is shown as final choice if it's not already in the list
-        # We will still show synonyms first, then primary as final
-        final_on_primary = True
-    else:
-        final_on_primary = False
-
     # If no synonyms, just set primary and finish
     if not dedup_synonyms:
         engine.replace_word_in_transformation_state(word_index, primary)
         engine.word_synonym_cycle_index[word_index] = 0
-        engine.trigger_count += 1
-
-        # Possibly transition phase if we've exhausted phase 1
-        if engine.trigger_count >= len(engine.original_poem_words):
-            engine.transition_to_phase_2_pairs()
+        engine.note_phase_1_word_completed()
 
         event = {
             "sequence_index": seq_idx_start,
@@ -179,12 +275,16 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
             "unit_level": "poem",
             "unit_path": None,
             "previous_state": prev_state,
-            "new_state": engine.get_current_transformation_state(),
+            **_render_snapshot(),
             "reason": "trigger",
             "confidence": 0.8,
             "alternatives": [],
             "triggered_by_context": False,
-            "context_snapshot": {}
+            "context_snapshot": {
+                "word_index": word_index,
+                "phase": acting_phase,
+                "phase_after": engine.get_current_phase().name,
+            }
         }
         _append_event_to_jsonl(event)
         await _broadcast_event(event)
@@ -193,25 +293,23 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
 
     # Broadcast each synonym in place (intermediate). Do not persist intermediates unless configured.
     for syn in dedup_synonyms:
-        temp_words, temp_separators = split_words_and_separators(
-            engine.get_current_transformation_state()
-        )
-        temp_words[word_index] = syn
-        temp_state = join_words_with_separators(temp_words, temp_separators)
-
         inter_event = {
             "sequence_index": None,
             "timestamp": None,
             "unit_level": "poem",
             "unit_path": None,
             "previous_state": prev_state,
-            "new_state": temp_state,
+            **_render_snapshot(engine.preview_word_slots(word_index, syn)),
             "reason": "synonym_cycle",
             "confidence": 0.0,
             "alternatives": dedup_synonyms,
             "intermediate": True,
             "triggered_by_context": False,
-            "context_snapshot": {"word_index": word_index}
+            "context_snapshot": {
+                "word_index": word_index,
+                "phase": acting_phase,
+                "phase_after": acting_phase,
+            }
         }
 
         # Broadcast intermediate
@@ -241,10 +339,7 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         # Not found in dedup list
         engine.word_synonym_cycle_index[word_index] = 0
 
-    # Advance trigger count and possibly transition phase
-    engine.trigger_count += 1
-    if engine.trigger_count >= len(engine.original_poem_words):
-        engine.transition_to_phase_2_pairs()
+    engine.note_phase_1_word_completed()
 
     # Final event — persist and broadcast
     event = {
@@ -253,12 +348,60 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         "unit_level": "poem",
         "unit_path": None,
         "previous_state": prev_state,
-        "new_state": engine.get_current_transformation_state(),
+        **_render_snapshot(),
         "reason": "trigger",
         "confidence": 0.8,
         "alternatives": dedup_synonyms,
         "triggered_by_context": False,
-        "context_snapshot": {"word_index": word_index}
+        "context_snapshot": {
+            "word_index": word_index,
+            "phase": acting_phase,
+            "phase_after": engine.get_current_phase().name,
+        }
+    }
+
+    _append_event_to_jsonl(event)
+    await _broadcast_event(event)
+    sequence_index += 1
+
+
+async def _run_block_trigger(seq_idx_start: int, prev_state: str):
+    """Advance one block-level trigger, for the phases after word-by-word.
+
+    Phases 2 and 3 rewrite a whole span at once, so there is nothing to cycle
+    through: a single event carries the new state.
+    """
+    global sequence_index
+
+    acting_phase = engine.get_current_phase().name
+    await asyncio.to_thread(engine.process_next_sensor_trigger)
+
+    if engine.last_action_phase:
+        acting_phase = engine.last_action_phase.name
+
+    start_index, end_index = engine.last_changed_span or (None, None)
+
+    event = {
+        "sequence_index": seq_idx_start,
+        "timestamp": None,
+        "unit_level": "poem",
+        "unit_path": None,
+        "previous_state": prev_state,
+        **_render_snapshot(),
+        # What the pass said it bettered, so a run can be read back as a
+        # record of the decisions and not only of their results.
+        "reason": engine.last_block_improvement or "trigger",
+        "confidence": 0.8,
+        # The versions the closing pass wrote and chose between, kept in the
+        # stream so a run can be read back with its roads not taken.
+        "alternatives": ['\n'.join(draft) for draft in engine.last_block_drafts],
+        "triggered_by_context": False,
+        "context_snapshot": {
+            "phase": acting_phase,
+            "phase_after": engine.get_current_phase().name,
+            "block_start": start_index,
+            "block_end": end_index,
+        }
     }
 
     _append_event_to_jsonl(event)
@@ -267,78 +410,43 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
 
 
 @app.post("/trigger")
-async def trigger(request: Request):
-    """Advance transformation by one trigger and broadcast the visible change.
+async def trigger():
+    """Advance the transformation by one trigger and broadcast the change.
 
-    For Phase 1 word-by-word, a single trigger starts a synonym cycle for the next word. Intermediates are
-    broadcast to connected clients at SYNONYM_CYCLE_INTERVAL, and the final choice is appended to the JSONL.
+    In Phase 1 a trigger picks the next word from the poem's shuffled order and
+    cycles its synonyms, broadcasting intermediates at SYNONYM_CYCLE_INTERVAL
+    before the final choice is appended to the JSONL. In later phases a trigger
+    rewrites one block.
 
-    For later phases, the original process_next_sensor_trigger() behavior is preserved.
+    The work runs as a background task so the request returns immediately;
+    clients see the result over the WebSocket.
     """
-    global sequence_index
+    if not engine.original_poem_words:
+        raise HTTPException(status_code=400, detail="No poem loaded")
 
-    # capture previous state snapshot
-    prev_state = engine.get_current_transformation_state()
-
-    # If not in Phase 1, fall back to original behavior
-    if engine.get_current_phase() != TransformationPhase.PHASE_1_WORD_BY_WORD:
-        new_state = engine.process_next_sensor_trigger()
-
-        event = {
-            "sequence_index": sequence_index,
-            "timestamp": None,
-            "unit_level": "poem",
-            "unit_path": None,
-            "previous_state": prev_state,
-            "new_state": new_state,
-            "reason": "trigger",
-            "confidence": 0.8,
-            "alternatives": [],
-            "triggered_by_context": False,
-            "context_snapshot": {}
-        }
-
-        _append_event_to_jsonl(event)
-        asyncio.create_task(_broadcast_event(event))
-        sequence_index += 1
-        return {"new_state": new_state}
-
-    # Phase 1 behavior: serialize cycles with a lock so only one cycle runs at a time
-    # If engine.trigger_count already past words, fall back to process_next_sensor_trigger()
-    if engine.trigger_count >= len(engine.original_poem_words):
-        new_state = engine.process_next_sensor_trigger()
-        event = {
-            "sequence_index": sequence_index,
-            "timestamp": None,
-            "unit_level": "poem",
-            "unit_path": None,
-            "previous_state": prev_state,
-            "new_state": new_state,
-            "reason": "trigger",
-            "confidence": 0.8,
-            "alternatives": [],
-            "triggered_by_context": False,
-            "context_snapshot": {}
-        }
-        _append_event_to_jsonl(event)
-        asyncio.create_task(_broadcast_event(event))
-        sequence_index += 1
-        return {"new_state": new_state}
-
-    # Determine which word to cycle for this trigger (do not increment trigger_count here)
-    word_index = engine.trigger_count
-
-    # Create task to run cycle but serialize using lock
     async def _task():
+        # One lock across every phase. Without it, triggers arriving in quick
+        # succession would interleave and rewrite the same part of the poem.
         async with _cycle_lock:
-            # Use current sequence_index value for final event index
-            seq_idx = sequence_index
-            await _run_synonym_cycle_for_word(word_index, seq_idx, prev_state)
+            if engine.get_current_phase() == TransformationPhase.COMPLETE:
+                return
+
+            prev_state = engine.get_current_transformation_state()
+
+            in_phase_1 = (
+                engine.get_current_phase() == TransformationPhase.PHASE_1_WORD_BY_WORD
+            )
+            word_index = engine.claim_next_phase_1_word_index() if in_phase_1 else None
+
+            if word_index is None:
+                await _run_block_trigger(sequence_index, prev_state)
+                return
+
+            await _run_synonym_cycle_for_word(word_index, sequence_index, prev_state)
 
     asyncio.create_task(_task())
 
-    # Return accepted — the full cycle will run asynchronously and clients will receive intermediate/broadcasts
-    return {"status": "accepted", "word_index": word_index}
+    return {"status": "accepted"}
 
 
 @app.get("/languages")
@@ -380,45 +488,49 @@ async def load_poem(payload: LoadPoemRequest):
             detail="Source and target languages must differ"
         )
 
-    engine.initialize_poem_with_text(
-        poem,
-        source_language=source["name"] if source else None,
-        source_language_code=source["code"] if source else None,
-        target_language=target["name"] if target else None,
-        target_language_code=target["code"] if target else None,
-    )
+    language_pair = {
+        "source_language": source["name"] if source else engine.source_language,
+        "source_language_code": source_code,
+        "target_language": target["name"] if target else engine.target_language,
+        "target_language_code": target_code,
+    }
 
-    language_pair = _current_language_pair()
-
+    # Saving before loading, so a poem loaded again without its final
+    # translation typed out still ends where it was always meant to.
     poem_id = engine.database_manager.store_or_update_poem_entry(
         raw_text=poem,
         title=payload.title,
         stanza_delimiter=payload.stanza_delimiter,
+        final_translation=(payload.final_translation or "").strip() or None,
         **language_pair
     )
-
-    event = {
-        "sequence_index": 0,
-        "timestamp": None,
-        "unit_level": "poem",
-        "unit_path": None,
-        "previous_state": None,
-        "new_state": engine.get_current_transformation_state(),
-        "reason": "poem_loaded",
-        "confidence": 1.0,
-        "alternatives": [],
-        "triggered_by_context": False,
-        "context_snapshot": {
-            "total_words": len(engine.original_poem_words),
-            "poem_id": poem_id,
-            **language_pair
-        }
+    stored_poem = engine.database_manager.retrieve_poem_entry_by_id(poem_id) or {
+        "id": poem_id,
+        "raw_text": poem,
+        "final_translation": (payload.final_translation or "").strip() or None,
+        **language_pair
     }
+    return _stage_stored_poem(stored_poem)
 
-    _append_event_to_jsonl(event)
-    asyncio.create_task(_broadcast_event(event))
 
-    return {"status": "ok", "poem_id": poem_id, **language_pair}
+@app.post("/next_poem")
+async def next_poem():
+    """Put the next saved poem on stage, wrapping around the library."""
+    poems = engine.database_manager.retrieve_all_poem_entries()
+    if not poems:
+        raise HTTPException(status_code=404, detail="No poems saved yet")
+
+    # The list comes newest-first. Reverse so "next" walks in the order they
+    # were added, then around again.
+    poems = list(reversed(poems))
+    ids = [poem["id"] for poem in poems]
+
+    if current_poem_id in ids:
+        next_index = (ids.index(current_poem_id) + 1) % len(ids)
+    else:
+        next_index = 0
+
+    return _stage_stored_poem(poems[next_index])
 
 
 @app.get("/state")
@@ -441,12 +553,15 @@ async def websocket_endpoint(websocket: WebSocket):
             "unit_level": "poem",
             "unit_path": None,
             "previous_state": None,
-            "new_state": engine.get_current_transformation_state(),
+            **_render_snapshot(),
             "reason": "initial_state",
             "confidence": 1.0,
             "alternatives": [],
             "triggered_by_context": False,
-            "context_snapshot": _current_language_pair()
+            "context_snapshot": {
+                "phase": engine.get_current_phase().name,
+                **_current_language_pair()
+            }
         }
         await manager.send_personal_message(json.dumps(init_event, ensure_ascii=False), websocket)
 
