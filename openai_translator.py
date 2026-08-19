@@ -186,7 +186,9 @@ class OpenAITranslator:
         whole_poem: str = None,
         mode: str = config.BLOCK_TRANSLATION_MODE_POETIC,
         current_reading: List[str] = None,
-        arriving_at: str = None
+        arriving_at: str = None,
+        returning: bool = False,
+        original_language: str = None
     ) -> Dict:
         """
         Request translation of a block of the poem, one line at a time
@@ -208,6 +210,10 @@ class OpenAITranslator:
                 string per line. This is what the pass is improving on, and
                 leaving it alone is a permitted answer.
             arriving_at: A finished translation the poem may come to rest on.
+            returning: Whether this pass is working the poem back into its
+                original language
+            original_language: Name of the language the poem was written in,
+                used when returning so the original is named correctly
 
         Returns:
             Dictionary with 'lines', a list the same length as source_lines,
@@ -228,15 +234,27 @@ class OpenAITranslator:
             f'"line {number + 1}"' for number in range(line_count)
         )
 
+        if returning:
+            passage_header = (
+                f"The passage as it currently reads, {line_count} line(s):\n"
+                f"{numbered_source}"
+            )
+            current_section = ''
+        else:
+            passage_header = (
+                f"The passage in the original {source_language}, {line_count} line(s):\n"
+                f"{numbered_source}"
+            )
+            current_section = self.describe_current_reading(current_reading)
+
         prompt = f"""
-        {self.describe_block_task(mode, source_language, target_language, line_count)}
+        {self.describe_block_task(mode, source_language, target_language, line_count, returning)}
 
-        The passage in the original {source_language}, {line_count} line(s):
-        {numbered_source}
+        {passage_header}
 
-        {self.describe_current_reading(current_reading)}
+        {current_section}
 
-        {self.describe_block_context(mode, poem_so_far, whole_poem, is_whole_poem, arriving_at)}
+        {self.describe_block_context(mode, poem_so_far, whole_poem, is_whole_poem, arriving_at, returning, original_language or source_language)}
 
         Return a JSON object with exactly this format:
         {self.describe_block_response_format(settings['draft_count'], line_placeholders)}
@@ -244,8 +262,8 @@ class OpenAITranslator:
         Rules:
         - "lines" must contain exactly {line_count} string(s), one per numbered line above.
         - Keep each line's content on its own line. Do not merge or split lines.
-        {self.describe_improvement_rules(current_reading, is_final)}
-        {self.describe_block_rules(mode, target_language, settings['draft_count'])}
+        {self.describe_improvement_rules(current_reading or source_lines, is_final, returning, target_language)}
+        {self.describe_block_rules(mode, target_language, settings['draft_count'], returning)}
 
         Return ONLY the JSON object, no additional text.
         """
@@ -268,10 +286,12 @@ class OpenAITranslator:
             response['lines'] = drafts[0]
         response['drafts'] = drafts
 
-        if response.get('unchanged') and current_reading:
+        if response.get('unchanged'):
             # A pass that found nothing to better says so, and the passage is
             # left exactly as the poem already had it.
-            response['lines'] = list(current_reading)
+            fallback = current_reading or source_lines
+            if fallback:
+                response['lines'] = list(fallback)
 
         return response
 
@@ -280,7 +300,8 @@ class OpenAITranslator:
         mode: str,
         source_language: str,
         target_language: str,
-        line_count: int
+        line_count: int,
+        returning: bool = False
     ) -> str:
         """
         Open the prompt by saying what kind of translation this pass wants
@@ -290,10 +311,21 @@ class OpenAITranslator:
             source_language: Name of source language
             target_language: Name of target language
             line_count: Number of lines in the excerpt
+            returning: Whether this pass is working the poem back into its
+                original language
 
         Returns:
             The opening paragraph of the prompt
         """
+        if returning:
+            return (
+                f"A poem has reached a {source_language} form and is being "
+                f"worked back into {target_language}, passage by passage. You "
+                f"are translating the passage in front of you into "
+                f"{target_language}. Do not replay the steps that produced the "
+                f"{source_language}; translate what is here."
+            )
+
         if mode == config.BLOCK_TRANSLATION_MODE_FINAL:
             return (
                 f"A poem is being translated from {source_language} into "
@@ -324,7 +356,9 @@ class OpenAITranslator:
         poem_so_far: str = None,
         whole_poem: str = None,
         passage_is_whole_poem: bool = False,
-        arriving_at: str = None
+        arriving_at: str = None,
+        returning: bool = False,
+        original_language: str = None
     ) -> str:
         """
         Build the context section of the prompt
@@ -339,6 +373,9 @@ class OpenAITranslator:
 
             arriving_at: A finished translation the poem may come to rest on,
                 shown as a direction, not as text to paste on this pass
+            returning: Whether this pass is working the poem back into its
+                original language
+            original_language: Name of the language the poem was written in
 
         Returns:
             The context paragraphs, or an empty string
@@ -362,12 +399,22 @@ class OpenAITranslator:
             )
 
         if arriving_at:
-            sections.append(
-                'A translation this poem may come to rest on. Move toward it '
-                'when that would be a true improvement of THIS passage. Do not '
-                'copy it out of turn, and do not pull in lines that are not '
-                f'part of the passage:\n"""\n{arriving_at}\n"""'
-            )
+            if returning:
+                language = original_language or 'original'
+                sections.append(
+                    f'The original {language} poem, as a direction to move '
+                    'toward. Translate the passage in front of you into '
+                    f'{language}. Do not paste these lines, even when they are '
+                    'what this passage used to be:\n'
+                    f'"""\n{arriving_at}\n"""'
+                )
+            else:
+                sections.append(
+                    'A translation this poem may come to rest on. Move toward it '
+                    'when that would be a true improvement of THIS passage. Do not '
+                    'copy it out of turn, and do not pull in lines that are not '
+                    f'part of the passage:\n"""\n{arriving_at}\n"""'
+                )
 
         return '\n\n'.join(sections)
 
@@ -392,7 +439,9 @@ class OpenAITranslator:
     def describe_improvement_rules(
         self,
         current_reading: List[str] = None,
-        is_final: bool = False
+        is_final: bool = False,
+        returning: bool = False,
+        target_language: str = None
     ) -> str:
         """
         The rules that make a pass an improvement rather than a rewrite
@@ -406,12 +455,32 @@ class OpenAITranslator:
             current_reading: The passage as the poem currently has it
             is_final: Whether this is the closing pass, which must produce a
                 finished poem and so cannot decline
+            returning: Whether this pass is working the poem back into its
+                original language
+            target_language: Language this pass is writing
 
         Returns:
             Rule lines for the prompt, or an empty string
         """
         if not current_reading:
             return ''
+
+        if returning:
+            language = target_language or 'the original language'
+            return (
+                f"- You are working this passage back into {language}. Keep "
+                f"every word that is already {language} and already right.\n"
+                "        - Change only what you can honestly move further into "
+                f"{language}: a truer sense, a phrase that a {language} poet\n"
+                "          would write, a rhythm closer to the original's. "
+                "Rewriting English as different English is not a return.\n"
+                "        - Do not paste the original poem. Translate the passage "
+                "in front of you, even when you can see what it used to be.\n"
+                "        - Say in \"improvement\", in a few words, what you "
+                "moved back.\n"
+                "        - If this passage cannot honestly move further yet, "
+                "set \"unchanged\" to true and repeat it in \"lines\"."
+            )
 
         shared = (
             "- You are not translating from scratch. The reading above is the "
@@ -465,7 +534,7 @@ class OpenAITranslator:
             '        }'
         )
 
-    def describe_block_rules(self, mode: str, target_language: str, draft_count: int) -> str:
+    def describe_block_rules(self, mode: str, target_language: str, draft_count: int, returning: bool = False) -> str:
         """
         Build the rules that differ between passes
 
@@ -473,15 +542,22 @@ class OpenAITranslator:
             mode: One of the keys of config.BLOCK_TRANSLATION_MODES
             target_language: Name of target language
             draft_count: How many drafts were asked for
+            returning: Whether this pass is working the poem back into its
+                original language
 
         Returns:
             The mode's rules as prompt bullet points
         """
         if mode == config.BLOCK_TRANSLATION_MODE_LITERAL:
+            stay_close = (
+                "Stay close to the wording of the passage in front of you."
+                if returning else
+                "Stay close to the wording of the original."
+            )
             return f"""- Make the fragment grammatical {target_language}. Do not complete a
           thought the fragment does not contain, and do not pull in words from
           the rest of the line.
-        - Stay close to the wording of the original.
+        - {stay_close}
         - Keep the original's punctuation and capitalisation where it carries
           meaning, including question marks, but only if that mark belongs to
           THIS fragment.

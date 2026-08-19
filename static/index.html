@@ -78,8 +78,18 @@
       PHASE_1_WORD_BY_WORD: 'Phase 1 · word by word',
       PHASE_2_GROWING_BLOCKS: 'Phase 2 · gathering',
       PHASE_3_ARRIVAL: 'Phase 2 · gathering',
+      RETURNING_TO_SOURCE: 'Returning',
       COMPLETE: 'At rest'
     };
+
+    function phaseLabel(snapshot) {
+      const phase = snapshot.phase_after || snapshot.phase;
+      if (phase === 'RETURNING_TO_SOURCE') {
+        const language = snapshot.source_language;
+        return language ? `Returning · toward ${language}` : 'Returning';
+      }
+      return PHASE_LABELS[phase] || phase;
+    }
 
     function updateLanguages(snapshot) {
       if (!snapshot) return;
@@ -90,7 +100,7 @@
       // reports; the event's own phase describes the change it carried.
       const phase = snapshot.phase_after || snapshot.phase;
       if (phase) {
-        phaseEl.textContent = PHASE_LABELS[phase] || phase;
+        phaseEl.textContent = phaseLabel(snapshot);
       }
     }
 
