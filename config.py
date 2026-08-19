@@ -144,6 +144,22 @@ LITERAL_BLOCK_MAX_WORDS = 3
 # block instead, up to this many times, rather than calling the API all day.
 MAX_BLOCKS_PER_TRIGGER = 3
 
+# Gathering has no click budget to the target. If this many gathering
+# triggers in a row change nothing, write one destination line so the
+# poem can still arrive instead of circling nearby wording forever.
+GATHER_STALL_BEFORE_LANDING = 3
+
+# A gathering rewrite is applied only when the model names one of these
+# defects. "More poetic" is not on the list.
+GATHER_REAL_DEFECTS = (
+    "wrong_sense",
+    "grammar",
+    "crib",
+    "dropped_image",
+    "closer_to_original",
+    "closer_to_destination",
+)
+
 # How each kind of block is translated. A two-word block wants the most likely
 # wording, so it runs cold; the closing pass over the whole poem wants room to
 # find a phrasing worth reading, so it runs warm and writes several drafts
@@ -176,6 +192,10 @@ BLOCK_TRANSLATION_MODES = {
 # question, which is why the phrase cache is off. Turning it on trades honesty
 # for a lower bill.
 CACHE_BLOCK_TRANSLATIONS = False
+
+# Word lookups are just as state-sensitive: a cached "it's" for "es" will keep
+# coming back. Fresh calls keep the page from repeating a bad saved rendering.
+CACHE_WORD_TRANSLATIONS = False
 
 # Set to an integer to replay the same random order every run, which is useful
 # when comparing two prompt versions on the same poem. Unset means a fresh

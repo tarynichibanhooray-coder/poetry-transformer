@@ -71,7 +71,8 @@ sequence_index = 1
 current_poem_id = None
 
 # Synonym cycling config
-SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "1.0"))
+# Long enough for a word to fade out and back in before the next synonym.
+SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "2.4"))
 LOG_INTERMEDIATE_SYNONYMS = os.environ.get("LOG_INTERMEDIATE_SYNONYMS", "false").lower() in ("1", "true", "yes")
 
 # Lock to serialize synonym cycles so they don't overlap
