@@ -70,6 +70,19 @@
     <textarea id="poem-input" placeholder="Dime, la rosa está desnuda / o sólo tiene ese vestido?"></textarea>
   </div>
 
+  <div class="field">
+    <label for="final-input">
+      <strong>Final translation</strong> <span class="hint">(optional)</span>
+    </label>
+    <p class="hint">
+      The translation the poem should come to rest on. Separate lines with
+      <code>/</code>, as above. Left blank, the closing pass writes its own,
+      and it will differ a little each run.
+    </p>
+    <textarea id="final-input" placeholder="Tell me, is the rose naked / or is that her only dress?"></textarea>
+    <p id="final-meta" class="meta"></p>
+  </div>
+
   <div class="actions">
     <button id="load">Load Poem</button>
     <button id="clear">Clear</button>
@@ -83,6 +96,8 @@
 
   <script>
     const inputEl = document.getElementById('poem-input');
+    const finalEl = document.getElementById('final-input');
+    const finalMetaEl = document.getElementById('final-meta');
     const titleEl = document.getElementById('title-input');
     const sourceEl = document.getElementById('source-language');
     const targetEl = document.getElementById('target-language');
@@ -159,6 +174,34 @@
       metaEl.textContent = `${lineCount} line${lineCount === 1 ? '' : 's'}, ${wordCount} word${wordCount === 1 ? '' : 's'}`;
     }
 
+    function countWrittenLines(raw) {
+      return parseLines(raw).filter(line => line !== '').length;
+    }
+
+    // The final translation is laid back onto the poem one line at a time, so a
+    // mismatch in line count means its breaks land somewhere else. Say so here
+    // rather than letting it be a surprise at the last trigger.
+    function updateFinalMeta() {
+      const finalLines = countWrittenLines(finalEl.value);
+      const poemLines = countWrittenLines(inputEl.value);
+
+      if (!finalLines) {
+        finalMetaEl.textContent = '';
+        return;
+      }
+
+      if (!poemLines || finalLines === poemLines) {
+        finalMetaEl.textContent = `${finalLines} line${finalLines === 1 ? '' : 's'}, matching the poem.`;
+        finalMetaEl.className = 'meta';
+        return;
+      }
+
+      finalMetaEl.textContent =
+        `${finalLines} line${finalLines === 1 ? '' : 's'}, but the poem has ${poemLines}. `
+        + `The words will be spread across the poem's lines, so the breaks may not fall where you put them.`;
+      finalMetaEl.className = 'meta err';
+    }
+
     function setStatus(message, className) {
       statusEl.textContent = message;
       statusEl.className = className || '';
@@ -166,13 +209,21 @@
 
     inputEl.addEventListener('input', () => {
       updatePreview();
+      updateFinalMeta();
+      setStatus('');
+    });
+
+    finalEl.addEventListener('input', () => {
+      updateFinalMeta();
       setStatus('');
     });
 
     clearBtn.addEventListener('click', () => {
       inputEl.value = '';
+      finalEl.value = '';
       titleEl.value = '';
       updatePreview();
+      updateFinalMeta();
       setStatus('');
       inputEl.focus();
     });
@@ -197,7 +248,8 @@
             title: titleEl.value.trim() || null,
             source_language_code: sourceEl.value || null,
             target_language_code: targetLanguageCode,
-            stanza_delimiter: STANZA_DELIMITER
+            stanza_delimiter: STANZA_DELIMITER,
+            final_translation: toPoemText(finalEl.value) || null
           })
         });
         const result = await response.json();
@@ -206,8 +258,12 @@
           setStatus('Failed to load poem: ' + (result.detail || response.status), 'err');
         } else {
           const wordCount = poem.split(/\s+/).filter(Boolean).length;
+          const ending = countWrittenLines(finalEl.value)
+            ? 'It will end on the translation you gave. '
+            : 'It will end on a translation written at the last trigger. ';
           statusEl.innerHTML = `Saved as poem #${result.poem_id} and loaded `
             + `${wordCount} words (${result.source_language} &rarr; ${result.target_language}). `
+            + ending
             + `<a href="/">Open the live view</a> to start triggering.`;
           statusEl.className = 'ok';
         }
@@ -219,6 +275,7 @@
     });
 
     updatePreview();
+    updateFinalMeta();
     loadLanguages();
   </script>
 </body>

@@ -66,7 +66,8 @@ class PoetryTransformerApplication:
                 source_language=poem['source_language'],
                 source_language_code=poem['source_language_code'],
                 target_language=poem['target_language'],
-                target_language_code=poem['target_language_code']
+                target_language_code=poem['target_language_code'],
+                final_translation=poem['final_translation']
             )
             poem_label = poem['title'] or f"untitled #{poem['id']}"
             print(f"✓ Poem loaded from database: {poem_label}")

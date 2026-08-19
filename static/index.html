@@ -9,6 +9,7 @@
     pre { background:#f7f7f7; padding:1rem; border-radius:6px; white-space:pre-wrap; }
     #status { margin-bottom:1rem; }
     button { padding:0.5rem 1rem; }
+    #next-poem { font-size: 1.25rem; line-height: 1; padding: 0.4rem 0.85rem; }
 
     .languages { font-size: 0.9rem; font-weight: normal; color: #555; }
 
@@ -41,10 +42,10 @@
   <div id="status">Connecting...</div>
   <div>
     <button id="trigger">Trigger (Space)</button>
-    <button id="load-sample">Load Sample Poem</button>
-    <a href="/add.html">Add a poem &rarr;</a>
+    <button id="next-poem" title="Next poem">→</button>
+    <a href="/add.html">Add a poem</a>
   </div>
-  <h2>Current Poem <span id="languages" class="languages"></span></h2>
+  <h2>Current Poem <span id="languages" class="languages"></span> <span id="phase" class="languages"></span></h2>
   <pre id="poem">(empty)</pre>
 
   <!-- Live region for screen readers: will announce cycling/snapshots -->
@@ -54,10 +55,11 @@
     const statusEl = document.getElementById('status');
     const poemEl = document.getElementById('poem');
     const triggerBtn = document.getElementById('trigger');
-    const loadBtn = document.getElementById('load-sample');
+    const nextBtn = document.getElementById('next-poem');
     const srLive = document.getElementById('sr-live');
 
     const base = window.location.origin;
+    const BLOCK_HIGHLIGHT_MS = 1500;
     const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
     const ws = new WebSocket(wsProto + '://' + location.host + '/ws');
 
@@ -70,10 +72,36 @@
     }
 
     const languagesEl = document.getElementById('languages');
+    const phaseEl = document.getElementById('phase');
+
+    const PHASE_LABELS = {
+      PHASE_1_WORD_BY_WORD: 'Phase 1 · word by word',
+      PHASE_2_GROWING_BLOCKS: 'Phase 2 · gathering',
+      PHASE_3_ARRIVAL: 'Phase 2 · gathering',
+      RETURNING_TO_SOURCE: 'Returning',
+      COMPLETE: 'At rest'
+    };
+
+    function phaseLabel(snapshot) {
+      const phase = snapshot.phase_after || snapshot.phase;
+      if (phase === 'RETURNING_TO_SOURCE') {
+        const language = snapshot.source_language;
+        return language ? `Returning · toward ${language}` : 'Returning';
+      }
+      return PHASE_LABELS[phase] || phase;
+    }
 
     function updateLanguages(snapshot) {
-      if (!snapshot || !snapshot.source_language) return;
-      languagesEl.textContent = `${snapshot.source_language} → ${snapshot.target_language}`;
+      if (!snapshot) return;
+      if (snapshot.source_language) {
+        languagesEl.textContent = `${snapshot.source_language} → ${snapshot.target_language}`;
+      }
+      // phase_after is where the poem now stands, which is what the header
+      // reports; the event's own phase describes the change it carried.
+      const phase = snapshot.phase_after || snapshot.phase;
+      if (phase) {
+        phaseEl.textContent = phaseLabel(snapshot);
+      }
     }
 
     // Matches the engine's word indexing, which ignores empty tokens.
@@ -81,24 +109,48 @@
       return (stateText || '').split(/\s+/).filter(Boolean);
     }
 
-    function renderState(stateText, highlightIndex = null, srAnnouncement = null) {
-      // Render line by line so the poem's line breaks survive, while keeping a
-      // running word index that matches the engine's.
+    // Build spans from the server's word slots. One slot per original word, so
+    // data-index matches the engine's index even when a slot holds a multi-word
+    // translation like "tell me".
+    function renderFromSlots(words, separators) {
+      const filled = [];
+      words.forEach((word, index) => { if (word) filled.push(index); });
+
+      return filled.map((index, position) => {
+        const span = `<span class="word" data-index="${index}">${escapeHtml(words[index])}</span>`;
+        if (position + 1 >= filled.length) return span;
+        const separator = separators[filled[position + 1] - 1];
+        return span + escapeHtml(separator === undefined ? ' ' : separator);
+      }).join('');
+    }
+
+    // Fallback for events without slot data: split on whitespace. Indices can
+    // drift from the engine's once a translation spans multiple words.
+    function renderFromText(stateText) {
       let wordIndex = 0;
-      const lines = (stateText || '').split('\n').map(line => {
+      return (stateText || '').split('\n').map(line => {
         return line.split(/\s+/).filter(Boolean).map(word => {
           const span = `<span class="word" data-index="${wordIndex}">${escapeHtml(word)}</span>`;
           wordIndex += 1;
           return span;
         }).join(' ');
-      });
-      poemEl.innerHTML = lines.join('\n');
-      // Apply highlight if requested
-      if (highlightIndex !== null && Number.isFinite(highlightIndex)) {
-        const el = poemEl.querySelector(`.word[data-index="${highlightIndex}"]`);
-        if (el) {
-          el.classList.add('cycling');
-        }
+      }).join('\n');
+    }
+
+    function renderState(stateText, highlight = null, srAnnouncement = null, words = null, separators = null) {
+      poemEl.innerHTML = Array.isArray(words)
+        ? renderFromSlots(words, separators || [])
+        : renderFromText(stateText);
+
+      // A block rewrite touches a span, a synonym cycle a single word.
+      const indices = (Array.isArray(highlight) ? highlight : [highlight])
+        .filter(Number.isFinite);
+
+      if (indices.length) {
+        indices.forEach(index => {
+          const el = poemEl.querySelector(`.word[data-index="${index}"]`);
+          if (el) el.classList.add('cycling');
+        });
       } else {
         // ensure no cycling classes remain
         poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
@@ -119,29 +171,41 @@
 
         updateLanguages(event.context_snapshot);
 
+        // Prefer the server's slot list; fall back to splitting the text.
+        const wordAt = (index) => Array.isArray(event.words)
+          ? (event.words[index] || '')
+          : (splitWords(event.new_state)[index] || '');
+
         // Intermediate synonym cycle events have `intermediate: true` and a context_snapshot.word_index
         if (event.intermediate && event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
           const idx = event.context_snapshot.word_index;
-          // Extract the cycling word from the new_state (it contains the current synonym at that index)
-          const newWords = splitWords(event.new_state);
-          const currentWord = newWords[idx] || '';
-          const sr = `Cycling word ${idx + 1}: ${currentWord}`;
-          renderState(event.new_state, idx, sr);
+          const sr = `Cycling word ${idx + 1}: ${wordAt(idx)}`;
+          renderState(event.new_state, idx, sr, event.words, event.separators);
+          return;
+        }
+
+        // A block rewrite from phase 2 or 3: flash the span that changed
+        const snapshot = event.context_snapshot || {};
+        if (event.new_state !== undefined && Number.isFinite(snapshot.block_start)) {
+          const span = [];
+          for (let i = snapshot.block_start; i < snapshot.block_end; i += 1) span.push(i);
+          renderState(event.new_state, span, 'Block rewritten.', event.words, event.separators);
+          setTimeout(() => {
+            poemEl.querySelectorAll('.word.cycling').forEach(e => e.classList.remove('cycling'));
+          }, BLOCK_HIGHLIGHT_MS);
           return;
         }
 
         // Normal final events: if we have a word index in context_snapshot, announce settled word
         if (event.new_state !== undefined) {
           let sr = null;
-          if (event.context_snapshot && typeof event.context_snapshot.word_index !== 'undefined') {
-            const idx = event.context_snapshot.word_index;
-            const newWords = splitWords(event.new_state);
-            const finalWord = newWords[idx] || '';
-            sr = `Word ${idx + 1} settled to ${finalWord}`;
+          if (typeof snapshot.word_index !== 'undefined') {
+            const idx = snapshot.word_index;
+            sr = `Word ${idx + 1} settled to ${wordAt(idx)}`;
           } else {
             sr = 'Poem updated.';
           }
-          renderState(event.new_state, null, sr);
+          renderState(event.new_state, null, sr, event.words, event.separators);
         }
 
       } catch (err) { console.error('Invalid event', err); }
@@ -163,17 +227,16 @@
       }
     });
 
-    loadBtn.addEventListener('click', async () => {
-      const sample = `Dime, la rosa está desnuda\no sólo tiene ese vestido?`;
-      await fetch(base + '/load_poem', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          poem: sample,
-          title: 'Libro de las preguntas',
-          source_language_code: 'es'
-        })
-      });
+    nextBtn.addEventListener('click', async () => {
+      try {
+        const response = await fetch(base + '/next_poem', { method: 'POST' });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          statusEl.textContent = detail.detail || 'No other poems yet';
+        }
+      } catch (err) {
+        console.error('Next poem failed', err);
+      }
     });
   </script>
 </body>

@@ -79,6 +79,8 @@ class DatabaseManager:
             source_word: Original word in source language
             target_word: Primary translation in target language
             synonyms_json: JSON array of up to 7 synonyms
+            context_line: Line of poetry the translation was chosen for
+            arriving_at: Finished translation the poem was heading for, if any
             source_language: Language code of source
             target_language: Language code of target
             created_at: Timestamp of creation
@@ -90,14 +92,41 @@ class DatabaseManager:
             source_word TEXT NOT NULL,
             target_word TEXT NOT NULL,
             synonyms_json TEXT NOT NULL,
+            context_line TEXT NOT NULL DEFAULT '',
+            arriving_at TEXT NOT NULL DEFAULT '',
             source_language TEXT NOT NULL,
             target_language TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(source_word, source_language, target_language)
+            UNIQUE(source_word, source_language, target_language, context_line, arriving_at)
         );
         """
         self.cursor.execute(create_table_sql)
+        self.migrate_word_cache_to_context_keys()
+
+    def migrate_word_cache_to_context_keys(self) -> None:
+        """
+        Rebuild a word cache that was keyed on too little
+
+        Which word a poem should keep depends on the line it sits in and on the
+        ending the poem is heading for, so both belong in the key: otherwise the
+        first choice ever made answers for every later poem, and editing a
+        poem's chosen ending leaves the old choices in place. SQLite cannot
+        alter a constraint after the fact, and the rows under the old key are
+        the ones this change exists to stop trusting, so the table is rebuilt
+        empty.
+        """
+        self.cursor.execute("PRAGMA table_info(word_cache)")
+        columns = {row['name'] for row in self.cursor.fetchall()}
+
+        if {'context_line', 'arriving_at'} <= columns:
+            return
+
+        if config.DEBUG_MODE:
+            print("✓ Rebuilding word_cache to key choices by poem and context")
+
+        self.cursor.execute("DROP TABLE word_cache")
+        self.create_word_cache_table()
 
     def create_phrase_cache_table(self) -> None:
         """
@@ -108,6 +137,7 @@ class DatabaseManager:
             source_phrase: Original phrase in source language
             target_phrase: Translation in target language
             phrase_word_count: Number of words in phrase
+            translation_mode: How much licence the translation took
             source_language: Language code of source
             target_language: Language code of target
             created_at: Timestamp of creation
@@ -119,14 +149,38 @@ class DatabaseManager:
             source_phrase TEXT NOT NULL,
             target_phrase TEXT NOT NULL,
             phrase_word_count INTEGER NOT NULL,
+            translation_mode TEXT NOT NULL DEFAULT 'literal',
             source_language TEXT NOT NULL,
             target_language TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(source_phrase, source_language, target_language)
+            UNIQUE(source_phrase, source_language, target_language, translation_mode)
         );
         """
         self.cursor.execute(create_table_sql)
+        self.migrate_phrase_cache_to_translation_modes()
+
+    def migrate_phrase_cache_to_translation_modes(self) -> None:
+        """
+        Rebuild a phrase cache created before translations had modes
+
+        The same text is now translated differently depending on the pass
+        asking for it, so the mode belongs in the unique key. SQLite cannot
+        alter a constraint in place, and rows from the older single-mode prompt
+        would answer for every mode, so the table is rebuilt empty. The cache
+        is only a cost saver; discarded rows are fetched again on demand.
+        """
+        self.cursor.execute("PRAGMA table_info(phrase_cache)")
+        columns = [row['name'] for row in self.cursor.fetchall()]
+
+        if 'translation_mode' in columns:
+            return
+
+        if config.DEBUG_MODE:
+            print("✓ Rebuilding phrase_cache to key translations by mode")
+
+        self.cursor.execute("DROP TABLE phrase_cache")
+        self.create_phrase_cache_table()
 
     def create_translation_history_table(self) -> None:
         """
@@ -169,11 +223,31 @@ class DatabaseManager:
             raw_text TEXT NOT NULL,
             lines_json TEXT,
             stanza_delimiter TEXT,
+            final_translation TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
         self.cursor.execute(create_table_sql)
+        self.migrate_poems_table_to_final_translation()
+
+    def migrate_poems_table_to_final_translation(self) -> None:
+        """
+        Add the chosen final translation to a poems table created without it
+
+        Adding a nullable column keeps every existing poem, which simply has no
+        destination text and falls back to a translation written on the night.
+        """
+        self.cursor.execute("PRAGMA table_info(poems)")
+        columns = [row['name'] for row in self.cursor.fetchall()]
+
+        if 'final_translation' in columns:
+            return
+
+        if config.DEBUG_MODE:
+            print("✓ Adding final_translation to the poems table")
+
+        self.cursor.execute("ALTER TABLE poems ADD COLUMN final_translation TEXT")
 
     def store_or_update_poem_entry(
         self,
@@ -183,7 +257,8 @@ class DatabaseManager:
         target_language: str,
         target_language_code: str,
         title: str = None,
-        stanza_delimiter: str = None
+        stanza_delimiter: str = None,
+        final_translation: str = None
     ) -> int:
         """
         Store a poem and the language pair it was entered with
@@ -200,6 +275,8 @@ class DatabaseManager:
             target_language_code: ISO code of target language
             title: Optional poem title
             stanza_delimiter: Delimiter the poem was entered with, if any
+            final_translation: The translation the poem should end on, if the
+                poem has a chosen one
 
         Returns:
             ID of the stored record
@@ -216,10 +293,14 @@ class DatabaseManager:
         if existing_row:
             update_sql = """
             UPDATE poems
-            SET title = COALESCE(?, title), updated_at = CURRENT_TIMESTAMP
+            SET title = COALESCE(?, title),
+                final_translation = COALESCE(?, final_translation),
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """
-            self.cursor.execute(update_sql, (title, existing_row['id']))
+            self.cursor.execute(
+                update_sql, (title, final_translation, existing_row['id'])
+            )
             self.commit_database_changes()
             return existing_row['id']
 
@@ -228,8 +309,9 @@ class DatabaseManager:
         insert_sql = """
         INSERT INTO poems
         (title, source_language, source_language_code, target_language,
-         target_language_code, raw_text, lines_json, stanza_delimiter)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         target_language_code, raw_text, lines_json, stanza_delimiter,
+         final_translation)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         self.cursor.execute(
             insert_sql,
@@ -241,7 +323,8 @@ class DatabaseManager:
                 target_language_code,
                 raw_text,
                 lines_json,
-                stanza_delimiter
+                stanza_delimiter,
+                final_translation
             )
         )
         self.commit_database_changes()
@@ -256,7 +339,7 @@ class DatabaseManager:
         """
         query = """
         SELECT id, title, source_language, source_language_code, target_language,
-               target_language_code, raw_text, created_at
+               target_language_code, raw_text, final_translation, created_at
         FROM poems
         ORDER BY id DESC
         """
@@ -275,7 +358,7 @@ class DatabaseManager:
         """
         query = """
         SELECT id, title, source_language, source_language_code, target_language,
-               target_language_code, raw_text, created_at
+               target_language_code, raw_text, final_translation, created_at
         FROM poems
         WHERE id = ?
         """
@@ -304,7 +387,9 @@ class DatabaseManager:
         self,
         source_word: str,
         source_language: str,
-        target_language: str
+        target_language: str,
+        context_line: str = '',
+        arriving_at: str = ''
     ) -> Optional[Dict]:
         """
         Retrieve a cached word translation from database
@@ -313,16 +398,30 @@ class DatabaseManager:
             source_word: Original word to look up
             source_language: Language code of source
             target_language: Language code of target
+            context_line: Line the word appears in. The same word in another
+                line is another translation, so it is part of the key.
+            arriving_at: Finished translation the poem is heading for, which
+                the choice was made in the light of
             
         Returns:
             Dictionary with word data or None if not found
         """
         query = """
-        SELECT id, source_word, target_word, synonyms_json, created_at
+        SELECT id, source_word, target_word, synonyms_json, context_line, created_at
         FROM word_cache
         WHERE source_word = ? AND source_language = ? AND target_language = ?
+              AND context_line = ? AND arriving_at = ?
         """
-        self.cursor.execute(query, (source_word, source_language, target_language))
+        self.cursor.execute(
+            query,
+            (
+                source_word,
+                source_language,
+                target_language,
+                context_line or '',
+                arriving_at or ''
+            )
+        )
         row = self.cursor.fetchone()
         
         if row:
@@ -332,6 +431,7 @@ class DatabaseManager:
                 'source_word': row['source_word'],
                 'target_word': row['target_word'],
                 'synonyms': json.loads(row['synonyms_json']),
+                'context_line': row['context_line'],
                 'created_at': row['created_at']
             }
         return None
@@ -342,7 +442,9 @@ class DatabaseManager:
         target_word: str,
         synonyms: List[str],
         source_language: str,
-        target_language: str
+        target_language: str,
+        context_line: str = '',
+        arriving_at: str = ''
     ) -> int:
         """
         Store a new word translation with synonyms in database
@@ -353,6 +455,8 @@ class DatabaseManager:
             synonyms: List of up to 7 synonyms
             source_language: Language code of source
             target_language: Language code of target
+            context_line: Line the translation was chosen for
+            arriving_at: Finished translation the poem is heading for
             
         Returns:
             ID of inserted record
@@ -363,12 +467,21 @@ class DatabaseManager:
         
         insert_sql = """
         INSERT OR IGNORE INTO word_cache
-        (source_word, target_word, synonyms_json, source_language, target_language)
-        VALUES (?, ?, ?, ?, ?)
+        (source_word, target_word, synonyms_json, context_line, arriving_at,
+         source_language, target_language)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """
         self.cursor.execute(
             insert_sql,
-            (source_word, target_word, synonyms_json, source_language, target_language)
+            (
+                source_word,
+                target_word,
+                synonyms_json,
+                context_line or '',
+                arriving_at or '',
+                source_language,
+                target_language
+            )
         )
         self.commit_database_changes()
         return self.cursor.lastrowid
@@ -377,7 +490,8 @@ class DatabaseManager:
         self,
         source_phrase: str,
         source_language: str,
-        target_language: str
+        target_language: str,
+        translation_mode: str = 'literal'
     ) -> Optional[Dict]:
         """
         Retrieve a cached phrase translation from database
@@ -386,16 +500,23 @@ class DatabaseManager:
             source_phrase: Original phrase to look up
             source_language: Language code of source
             target_language: Language code of target
+            translation_mode: The pass that asked for it. A line translated
+                literally and the same line translated as poetry are different
+                translations and must not answer for each other.
             
         Returns:
             Dictionary with phrase data or None if not found
         """
         query = """
-        SELECT id, source_phrase, target_phrase, phrase_word_count, created_at
+        SELECT id, source_phrase, target_phrase, phrase_word_count, translation_mode, created_at
         FROM phrase_cache
         WHERE source_phrase = ? AND source_language = ? AND target_language = ?
+              AND translation_mode = ?
         """
-        self.cursor.execute(query, (source_phrase, source_language, target_language))
+        self.cursor.execute(
+            query,
+            (source_phrase, source_language, target_language, translation_mode)
+        )
         row = self.cursor.fetchone()
         
         if row:
@@ -405,6 +526,7 @@ class DatabaseManager:
                 'source_phrase': row['source_phrase'],
                 'target_phrase': row['target_phrase'],
                 'phrase_word_count': row['phrase_word_count'],
+                'translation_mode': row['translation_mode'],
                 'created_at': row['created_at']
             }
         return None
@@ -414,7 +536,8 @@ class DatabaseManager:
         source_phrase: str,
         target_phrase: str,
         source_language: str,
-        target_language: str
+        target_language: str,
+        translation_mode: str = 'literal'
     ) -> int:
         """
         Store a new phrase translation in database
@@ -424,6 +547,7 @@ class DatabaseManager:
             target_phrase: Translated phrase
             source_language: Language code of source
             target_language: Language code of target
+            translation_mode: The pass that produced it
             
         Returns:
             ID of inserted record
@@ -432,12 +556,20 @@ class DatabaseManager:
         
         insert_sql = """
         INSERT OR IGNORE INTO phrase_cache
-        (source_phrase, target_phrase, phrase_word_count, source_language, target_language)
-        VALUES (?, ?, ?, ?, ?)
+        (source_phrase, target_phrase, phrase_word_count, translation_mode,
+         source_language, target_language)
+        VALUES (?, ?, ?, ?, ?, ?)
         """
         self.cursor.execute(
             insert_sql,
-            (source_phrase, target_phrase, word_count, source_language, target_language)
+            (
+                source_phrase,
+                target_phrase,
+                word_count,
+                translation_mode,
+                source_language,
+                target_language
+            )
         )
         self.commit_database_changes()
         return self.cursor.lastrowid
