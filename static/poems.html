@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Poetry Transformer — Poems</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; max-width: 64rem; }
+    nav { margin-bottom: 1.5rem; display: flex; gap: 1rem; }
+    h1 { margin-bottom: 0.25rem; }
+    .hint { color: #555; font-size: 0.9rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1.5rem; }
+    th, td { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 1px solid #e4e4e4; vertical-align: top; }
+    th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: #555; border-bottom-width: 2px; }
+    tbody tr:hover { background: #fafafa; }
+    .title { font-weight: 600; }
+    .title a { color: inherit; }
+    .opening { color: #666; font-size: 0.9rem; margin-top: 0.2rem; white-space: pre-wrap; }
+    .arrow { color: #999; margin: 0 0.4rem; }
+    .counts { color: #555; font-size: 0.9rem; white-space: nowrap; }
+    .counts .none { color: #aaa; }
+    .badge { display: inline-block; font-size: 0.72rem; text-transform: uppercase;
+             letter-spacing: 0.04em; padding: 0.1rem 0.4rem; border-radius: 3px;
+             background: #0a7d28; color: #fff; margin-left: 0.4rem; vertical-align: 1px; }
+    .empty { color: #777; margin-top: 2rem; }
+    .err { color: #b00020; }
+    .ok { color: #0a7d28; }
+    tr.off .title a, tr.off .opening, tr.off td { color: #999; }
+    tr.off .title a { text-decoration-color: #ccc; }
+    .active-cell label { display: flex; gap: 0.4rem; align-items: center;
+                         cursor: pointer; font-size: 0.9rem; white-space: nowrap; }
+    .row-actions { display: flex; gap: 0.75rem; align-items: center; white-space: nowrap; }
+    .row-actions button { background: none; border: none; color: #06c; cursor: pointer;
+                          padding: 0; font: inherit; }
+    .row-actions button:hover { text-decoration: underline; }
+    .row-actions button[disabled] { color: #bbb; cursor: default; text-decoration: none; }
+    #status { min-height: 1.4rem; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/">&larr; Live view</a>
+    <a href="/add.html">Add a poem</a>
+  </nav>
+
+  <h1>Poems</h1>
+  <p class="hint">
+    Every poem in the library. Open one to read the record of how it was translated.
+    Only poems that are switched on are put on the wall.
+  </p>
+
+  <div id="status" aria-live="polite"></div>
+  <div id="content"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const contentEl = document.getElementById('content');
+
+    const STAGES = [
+      ['words', 'words'],
+      ['phrases', 'phrases'],
+      ['lines', 'variations'],
+    ];
+
+    function firstLine(text) {
+      const line = (text || '').split('\n').find(part => part.trim());
+      return line ? line.trim() : '';
+    }
+
+    function element(tag, text, className) {
+      const node = document.createElement(tag);
+      if (text !== undefined && text !== null) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    }
+
+    function countsCell(counts) {
+      const cell = element('td', null, 'counts');
+      const total = STAGES.reduce((sum, [key]) => sum + (counts[key] || 0), 0);
+      if (!total) {
+        cell.appendChild(element('span', 'no readings yet', 'none'));
+        return cell;
+      }
+      cell.textContent = STAGES
+        .map(([key, label]) => `${counts[key] || 0} ${label}`)
+        .join(' · ');
+      return cell;
+    }
+
+    async function setActive(poem, active, checkbox) {
+      checkbox.disabled = true;
+      try {
+        const response = await fetch(`/api/poems/${poem.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active }),
+        });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        await load();
+        statusEl.textContent = active
+          ? `"${poem.title || 'Untitled'}" is back in the rotation.`
+          : `"${poem.title || 'Untitled'}" is out of the rotation. Its record is kept.`;
+        statusEl.className = 'ok';
+      } catch (error) {
+        checkbox.checked = !active;
+        checkbox.disabled = false;
+        statusEl.textContent = `Could not change that: ${error.message}`;
+        statusEl.className = 'err';
+      }
+    }
+
+    async function showNow(poem, button) {
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/poems/${poem.id}/live`, { method: 'POST' });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        await load();
+        statusEl.textContent = `"${poem.title || 'Untitled'}" is now on the screen.`;
+        statusEl.className = 'ok';
+      } catch (error) {
+        button.disabled = false;
+        statusEl.textContent = `Could not show that poem: ${error.message}`;
+        statusEl.className = 'err';
+      }
+    }
+
+    function activeCell(poem) {
+      const cell = element('td', null, 'active-cell');
+      const label = document.createElement('label');
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = poem.active;
+      checkbox.addEventListener('change', () => {
+        setActive(poem, checkbox.checked, checkbox);
+      });
+
+      label.appendChild(checkbox);
+      label.appendChild(element('span', poem.active ? 'On' : 'Off'));
+      cell.appendChild(label);
+      return cell;
+    }
+
+    function poemRow(poem) {
+      const row = document.createElement('tr');
+      if (!poem.active) row.className = 'off';
+
+      const titleCell = element('td');
+      const heading = element('div', null, 'title');
+      const link = element('a', poem.title || 'Untitled');
+      link.href = `/poems/${poem.id}`;
+      heading.appendChild(link);
+      if (poem.is_live) heading.appendChild(element('span', 'live', 'badge'));
+      titleCell.appendChild(heading);
+      titleCell.appendChild(element('div', firstLine(poem.raw_text), 'opening'));
+      row.appendChild(titleCell);
+
+      const languageCell = element('td');
+      languageCell.appendChild(element('span', poem.source_language || '—'));
+      languageCell.appendChild(element('span', '→', 'arrow'));
+      languageCell.appendChild(element('span', poem.target_language || '—'));
+      row.appendChild(languageCell);
+
+      row.appendChild(countsCell(poem.iteration_counts || {}));
+      row.appendChild(activeCell(poem));
+
+      const actionCell = element('td', null, 'row-actions');
+      const open = element('a', 'Open');
+      open.href = `/poems/${poem.id}`;
+      actionCell.appendChild(open);
+
+      const showButton = element('button', 'Show this poem now');
+      if (poem.is_live) {
+        showButton.disabled = true;
+        showButton.title = 'This poem is already live.';
+      } else {
+        showButton.addEventListener('click', () => showNow(poem, showButton));
+      }
+      actionCell.appendChild(showButton);
+      row.appendChild(actionCell);
+
+      return row;
+    }
+
+    async function load() {
+      statusEl.textContent = 'Loading…';
+      statusEl.className = '';
+      try {
+        const response = await fetch('/api/poems');
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        const { poems } = await response.json();
+        statusEl.textContent = '';
+        render(poems || []);
+      } catch (error) {
+        statusEl.textContent = `Could not load the library: ${error.message}`;
+        statusEl.className = 'err';
+      }
+    }
+
+    function render(poems) {
+      contentEl.replaceChildren();
+
+      if (!poems.length) {
+        const empty = element('p', 'No poems saved yet. ', 'empty');
+        const link = element('a', 'Add one');
+        link.href = '/add.html';
+        empty.appendChild(link);
+        empty.append('.');
+        contentEl.appendChild(empty);
+        return;
+      }
+
+      const table = document.createElement('table');
+      const head = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      for (const label of ['Poem', 'Origin → target', 'Readings recorded', 'In rotation', '']) {
+        headRow.appendChild(element('th', label));
+      }
+      head.appendChild(headRow);
+      table.appendChild(head);
+
+      const body = document.createElement('tbody');
+      for (const poem of poems) body.appendChild(poemRow(poem));
+      table.appendChild(body);
+
+      contentEl.appendChild(table);
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Poetry Transformer — Poem</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: system-ui, Arial; margin: 2rem; max-width: 60rem; }
+    nav { margin-bottom: 1.5rem; display: flex; gap: 1rem; }
+    h1 { margin-bottom: 0.25rem; }
+    h2 { margin-bottom: 0.2rem; }
+    .hint { color: #555; font-size: 0.9rem; }
+    .arrow { color: #999; margin: 0 0.4rem; }
+
+    .poem-pair { display: flex; gap: 2rem; flex-wrap: wrap; margin: 1rem 0 2.5rem; }
+    .poem-pair section { flex: 1 1 18rem; }
+    .poem-pair h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em;
+                    color: #555; margin: 0 0 0.4rem; }
+    pre { background: #f7f7f7; padding: 1rem; border-radius: 6px; white-space: pre-wrap;
+          margin: 0; font-family: inherit; }
+
+    .stage { margin-bottom: 3rem; }
+    .stage > .hint { margin-top: 0.1rem; }
+
+    ol.readings { list-style: none; padding: 0; margin: 1rem 0 0; }
+    ol.readings > li { border-top: 1px solid #e4e4e4; padding: 0.75rem 0; display: flex; gap: 0.9rem; }
+    ol.readings > li:last-child { border-bottom: 1px solid #e4e4e4; }
+    .position { color: #aaa; font-variant-numeric: tabular-nums; min-width: 1.8rem; }
+    .body { flex: 1; min-width: 0; }
+    .source { color: #666; font-size: 0.9rem; }
+    .source::after { content: ' →'; color: #bbb; }
+    .content { white-space: pre-wrap; margin: 0.15rem 0; }
+    .note { color: #666; font-size: 0.9rem; font-style: italic; }
+    .alternatives { color: #888; font-size: 0.85rem; margin-top: 0.2rem; }
+    .row-actions { display: flex; gap: 0.5rem; align-items: flex-start; }
+    .row-actions button { background: none; border: none; color: #06c; cursor: pointer;
+                          padding: 0; font: inherit; font-size: 0.9rem; }
+    .row-actions button:hover { text-decoration: underline; }
+    .row-actions button.danger { color: #b00020; }
+
+    .badge { display: inline-block; font-size: 0.7rem; text-transform: uppercase;
+             letter-spacing: 0.04em; padding: 0.05rem 0.35rem; border-radius: 3px;
+             margin-left: 0.4rem; vertical-align: 1px; }
+    .badge.hand { background: #06c; color: #fff; }
+    .badge.edited { background: #b8860b; color: #fff; }
+    .badge.home { background: #eee; color: #555; }
+
+    .editor { display: flex; flex-direction: column; gap: 0.4rem; }
+    textarea, input[type="text"] {
+      width: 100%; box-sizing: border-box; padding: 0.5rem; font-family: inherit;
+      font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; resize: vertical;
+    }
+    textarea { min-height: 3.5rem; }
+    .editor-actions { display: flex; gap: 0.5rem; }
+    .editor-actions button { padding: 0.4rem 0.9rem; }
+
+    details.add { margin-top: 1rem; }
+    details.add summary { cursor: pointer; color: #06c; font-size: 0.9rem; }
+    details.add .editor { margin-top: 0.75rem; max-width: 34rem; }
+
+    .empty { color: #888; font-style: italic; margin: 1rem 0 0; }
+    #status { min-height: 1.4rem; }
+    .err { color: #b00020; }
+    .ok { color: #0a7d28; }
+
+    .poem-controls { display: flex; gap: 1.25rem; align-items: center; margin-top: 0.6rem; }
+    .poem-controls label { display: flex; gap: 0.4rem; align-items: center;
+                           cursor: pointer; font-size: 0.9rem; }
+    .poem-controls button { background: none; border: none; color: #06c;
+                            cursor: pointer; padding: 0; font: inherit; font-size: 0.9rem; }
+    .poem-controls button.danger { color: #b00020; }
+    .poem-controls button:hover { text-decoration: underline; }
+    .poem-controls button[disabled] { color: #bbb; cursor: default; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/poems">&larr; All poems</a>
+    <a href="/">Live view</a>
+  </nav>
+
+  <div id="status" aria-live="polite"></div>
+  <div id="content"></div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const contentEl = document.getElementById('content');
+    const poemId = Number(window.location.pathname.split('/').filter(Boolean).pop());
+
+    const STAGES = [
+      {
+        key: 'words',
+        heading: 'Stage 1 · words',
+        blurb: 'One source word at a time, translated with nothing around it.',
+        sourceLabel: 'Source word',
+        contentLabel: 'Reading',
+      },
+      {
+        key: 'phrases',
+        heading: 'Stage 2 · phrases',
+        blurb: 'Two or three words at a time, with their own line visible as context.',
+        sourceLabel: 'Source scrap',
+        contentLabel: 'Reading',
+      },
+      {
+        key: 'lines',
+        heading: 'Stage 3 · variations',
+        blurb: 'Complete readings of the whole poem, ranked worst to best.',
+        sourceLabel: 'Source poem',
+        contentLabel: 'Variation',
+        // Stage 3 works on the whole poem, so its source has line breaks in
+        // it. A single-line input would drop them without saying so.
+        sourceMultiline: true,
+      },
+    ];
+
+    function element(tag, text, className) {
+      const node = document.createElement(tag);
+      if (text !== undefined && text !== null) node.textContent = text;
+      if (className) node.className = className;
+      return node;
+    }
+
+    function say(message, className) {
+      statusEl.textContent = message;
+      statusEl.className = className || '';
+    }
+
+    async function request(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`;
+        try {
+          const body = await response.json();
+          if (body.detail) detail = body.detail;
+        } catch (ignored) { /* the status line will do */ }
+        throw new Error(detail);
+      }
+      return response.json();
+    }
+
+    let poemData = null;
+
+    async function load() {
+      say('Loading…');
+      try {
+        poemData = await request(`/api/poems/${poemId}`);
+        say('');
+        render();
+      } catch (error) {
+        say(`Could not load this poem: ${error.message}`, 'err');
+      }
+    }
+
+    function countReadings() {
+      return Object.values(poemData.stages)
+        .reduce((total, readings) => total + readings.length, 0);
+    }
+
+    async function setActive(active, checkbox) {
+      checkbox.disabled = true;
+      try {
+        await request(`/api/poems/${poemId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active }),
+        });
+        await load();
+        say(
+          active
+            ? 'Back in the rotation.'
+            : 'Out of the rotation. Everything recorded here is kept.',
+          'ok'
+        );
+      } catch (error) {
+        checkbox.checked = !active;
+        checkbox.disabled = false;
+        say(`Could not change that: ${error.message}`, 'err');
+      }
+    }
+
+    async function deletePoem(poem) {
+      const readings = countReadings();
+      const tail = readings
+        ? `\n\nIts ${readings} recorded reading${readings === 1 ? '' : 's'} will go with it.`
+        : '';
+      const warning = `Delete "${poem.title || 'Untitled'}" for good?${tail}` +
+        '\n\nTo keep the record, switch the poem off instead.';
+      if (!window.confirm(warning)) return;
+
+      try {
+        await request(`/api/poems/${poemId}`, { method: 'DELETE' });
+        window.location.href = '/poems';
+      } catch (error) {
+        say(`Could not delete: ${error.message}`, 'err');
+      }
+    }
+
+    async function showNow(button) {
+      button.disabled = true;
+      try {
+        await request(`/api/poems/${poemId}/live`, { method: 'POST' });
+        await load();
+        say('This poem is now on the screen.', 'ok');
+      } catch (error) {
+        button.disabled = false;
+        say(`Could not show this poem: ${error.message}`, 'err');
+      }
+    }
+
+    function poemControls(poem) {
+      const controls = element('div', null, 'poem-controls');
+
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = poem.active;
+      checkbox.addEventListener('change', () => setActive(checkbox.checked, checkbox));
+      label.appendChild(checkbox);
+      label.appendChild(element(
+        'span',
+        poem.active ? 'In the rotation' : 'Out of the rotation'
+      ));
+      controls.appendChild(label);
+
+      const show = element('button', 'Show this poem now');
+      if (poemData.is_live) {
+        show.disabled = true;
+        show.title = 'This poem is already live.';
+      } else {
+        show.addEventListener('click', () => showNow(show));
+      }
+      controls.appendChild(show);
+
+      const remove = element('button', 'Delete this poem', 'danger');
+      if (poemData.is_live) {
+        remove.disabled = true;
+        remove.title = 'This poem is live. Move to another poem before deleting it.';
+      } else {
+        remove.addEventListener('click', () => deletePoem(poem));
+      }
+      controls.appendChild(remove);
+
+      return controls;
+    }
+
+    function renderHeader(poem) {
+      document.title = `Poetry Transformer — ${poem.title || 'Untitled'}`;
+
+      const header = document.createElement('header');
+      header.appendChild(element('h1', poem.title || 'Untitled'));
+
+      const languages = element('p', null, 'hint');
+      languages.append(poem.source_language || '—');
+      languages.appendChild(element('span', '→', 'arrow'));
+      languages.append(poem.target_language || '—');
+      header.appendChild(languages);
+
+      header.appendChild(poemControls(poem));
+
+      const pair = element('div', null, 'poem-pair');
+
+      const original = document.createElement('section');
+      original.appendChild(element('h3', `Original · ${poem.source_language || ''}`.trim()));
+      original.appendChild(element('pre', poem.raw_text || ''));
+      pair.appendChild(original);
+
+      const chosen = document.createElement('section');
+      chosen.appendChild(element('h3', `Chosen rendering · ${poem.target_language || ''}`.trim()));
+      chosen.appendChild(element(
+        'pre',
+        poem.final_translation || 'None chosen. The closing pass writes its own.'
+      ));
+      pair.appendChild(chosen);
+
+      header.appendChild(pair);
+      return header;
+    }
+
+    function badges(iteration) {
+      const fragment = document.createDocumentFragment();
+      if (iteration.origin === 'hand') fragment.appendChild(element('span', 'by hand', 'badge hand'));
+      if (iteration.edited) fragment.appendChild(element('span', 'edited', 'badge edited'));
+      if (iteration.journey === 'home') fragment.appendChild(element('span', 'homeward', 'badge home'));
+      return fragment;
+    }
+
+    function readingView(iteration, stage, onEdit) {
+      const body = element('div', null, 'body');
+
+      if (iteration.source_text) {
+        body.appendChild(element('div', iteration.source_text, 'source'));
+      }
+
+      const content = element('div', iteration.content, 'content');
+      content.appendChild(badges(iteration));
+      body.appendChild(content);
+
+      if (iteration.note) body.appendChild(element('div', iteration.note, 'note'));
+
+      if (iteration.alternatives && iteration.alternatives.length) {
+        body.appendChild(element(
+          'div',
+          `also offered: ${iteration.alternatives.join(', ')}`,
+          'alternatives'
+        ));
+      }
+
+      const actions = element('div', null, 'row-actions');
+      const edit = element('button', 'Edit');
+      edit.addEventListener('click', onEdit);
+      actions.appendChild(edit);
+
+      const remove = element('button', 'Delete', 'danger');
+      remove.addEventListener('click', () => deleteReading(iteration));
+      actions.appendChild(remove);
+
+      return { body, actions };
+    }
+
+    function editorFields(stage, values) {
+      const editor = element('div', null, 'editor');
+
+      const source = document.createElement(stage.sourceMultiline ? 'textarea' : 'input');
+      if (!stage.sourceMultiline) source.type = 'text';
+      source.placeholder = stage.sourceLabel;
+      source.value = values.source_text || '';
+      editor.appendChild(source);
+
+      const content = document.createElement('textarea');
+      content.placeholder = stage.contentLabel;
+      content.value = values.content || '';
+      editor.appendChild(content);
+
+      const note = document.createElement('input');
+      note.type = 'text';
+      note.placeholder = 'Note (optional)';
+      note.value = values.note || '';
+      editor.appendChild(note);
+
+      return { editor, source, content, note };
+    }
+
+    function readingEditor(iteration, stage, onDone) {
+      const { editor, source, content, note } = editorFields(stage, iteration);
+
+      const actions = element('div', null, 'editor-actions');
+      const save = element('button', 'Save');
+      save.addEventListener('click', async () => {
+        if (!content.value.trim()) {
+          say('A reading cannot be empty.', 'err');
+          return;
+        }
+        save.disabled = true;
+        try {
+          await request(`/api/iterations/${iteration.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: content.value,
+              source_text: source.value,
+              note: note.value,
+            }),
+          });
+          say('Saved.', 'ok');
+          await load();
+        } catch (error) {
+          save.disabled = false;
+          say(`Could not save: ${error.message}`, 'err');
+        }
+      });
+      actions.appendChild(save);
+
+      const cancel = element('button', 'Cancel');
+      cancel.addEventListener('click', onDone);
+      actions.appendChild(cancel);
+
+      editor.appendChild(actions);
+      content.focus();
+      return editor;
+    }
+
+    function readingItem(iteration, stage) {
+      const item = document.createElement('li');
+      item.appendChild(element('div', iteration.position, 'position'));
+
+      function showView() {
+        const { body, actions } = readingView(iteration, stage, showEditor);
+        item.replaceChildren(element('div', iteration.position, 'position'), body, actions);
+      }
+
+      function showEditor() {
+        const editor = readingEditor(iteration, stage, showView);
+        const wrapper = element('div', null, 'body');
+        wrapper.appendChild(editor);
+        item.replaceChildren(element('div', iteration.position, 'position'), wrapper);
+      }
+
+      showView();
+      return item;
+    }
+
+    async function deleteReading(iteration) {
+      const preview = iteration.content.length > 48
+        ? `${iteration.content.slice(0, 48)}…`
+        : iteration.content;
+      if (!window.confirm(`Delete this reading?\n\n${preview}`)) return;
+      try {
+        await request(`/api/iterations/${iteration.id}`, { method: 'DELETE' });
+        say('Deleted.', 'ok');
+        await load();
+      } catch (error) {
+        say(`Could not delete: ${error.message}`, 'err');
+      }
+    }
+
+    function addForm(stage) {
+      const details = element('details', null, 'add');
+      details.appendChild(element('summary', `Add a ${stage.contentLabel.toLowerCase()}`));
+
+      const { editor, source, content, note } = editorFields(stage, {});
+
+      const actions = element('div', null, 'editor-actions');
+      const save = element('button', 'Add');
+      save.addEventListener('click', async () => {
+        if (!content.value.trim()) {
+          say('A reading cannot be empty.', 'err');
+          return;
+        }
+        save.disabled = true;
+        try {
+          await request(`/api/poems/${poemId}/iterations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              stage: stage.key,
+              content: content.value,
+              source_text: source.value,
+              note: note.value,
+            }),
+          });
+          say('Added.', 'ok');
+          await load();
+        } catch (error) {
+          save.disabled = false;
+          say(`Could not add: ${error.message}`, 'err');
+        }
+      });
+      actions.appendChild(save);
+      editor.appendChild(actions);
+
+      details.appendChild(editor);
+      return details;
+    }
+
+    function stageSection(stage, iterations) {
+      const section = element('section', null, 'stage');
+      section.appendChild(element('h2', stage.heading));
+      section.appendChild(element('p', stage.blurb, 'hint'));
+
+      if (!iterations.length) {
+        section.appendChild(element(
+          'p',
+          'Nothing recorded for this stage yet.',
+          'empty'
+        ));
+      } else {
+        const list = element('ol', null, 'readings');
+        for (const iteration of iterations) {
+          list.appendChild(readingItem(iteration, stage));
+        }
+        section.appendChild(list);
+      }
+
+      section.appendChild(addForm(stage));
+      return section;
+    }
+
+    function render() {
+      const { poem, stages } = poemData;
+      contentEl.replaceChildren(renderHeader(poem));
+      for (const stage of STAGES) {
+        contentEl.appendChild(stageSection(stage, stages[stage.key] || []));
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

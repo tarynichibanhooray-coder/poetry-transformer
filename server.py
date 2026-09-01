@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import asyncio
@@ -7,10 +8,10 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, List, Optional
-import random
 
 import config
 
+from poem_rotation import PoemDeck
 from poem_transformer_engine import PoemTransformerEngine, TransformationPhase
 
 
@@ -67,8 +68,12 @@ app.add_middleware(
 manager = ConnectionManager()
 engine = PoemTransformerEngine()
 sequence_index = 1
-# The poem currently on screen, so "next" can walk the library.
+# The poem currently on screen, so "next" knows what it is following.
 current_poem_id = None
+
+# The order poems come up in. Shuffled, and every poem in the rotation is
+# shown once before any of them comes round again.
+poem_deck = PoemDeck()
 
 # Synonym cycling config
 # Long enough for a word to fade out and back in before the next synonym.
@@ -89,8 +94,12 @@ OPENING_POEM = {
 }
 
 
-def _stage_stored_poem(stored_poem: Dict, broadcast: bool = True) -> Dict:
-    """Initialize the engine from a saved poem, optionally telling clients."""
+def _make_poem_live(stored_poem: Dict, broadcast: bool = True) -> Dict:
+    """Make a saved poem the live one, optionally telling connected clients.
+
+    Only one poem is live at a time: the one the screen is showing and the
+    one the motion sensor advances.
+    """
     global current_poem_id
 
     language_pair = {
@@ -106,6 +115,8 @@ def _stage_stored_poem(stored_poem: Dict, broadcast: bool = True) -> Dict:
         **language_pair
     )
     current_poem_id = stored_poem["id"]
+    # Which library row the stages should file their readings under.
+    engine.poem_id = current_poem_id
 
     if broadcast:
         event = {
@@ -133,12 +144,16 @@ def _stage_stored_poem(stored_poem: Dict, broadcast: bool = True) -> Dict:
 
 
 def _ensure_opening_poem() -> None:
-    """Put a poem on stage as soon as the server starts, with no click required.
+    """Make a poem live as soon as the server starts, with no click required.
 
-    A random saved poem if the library has any; otherwise the default rose
-    couplet, which is stored so Next has something to walk.
+    The first card off the shuffled deck if the rotation has anything in it,
+    so the installation does not open on the same poem every morning.
+    Otherwise the default rose couplet, which is stored so Next has
+    something to walk. A library where every poem has been switched off is
+    treated as an empty one, so the screen starts on the default rather than
+    on a poem that was deliberately taken out of the rotation.
     """
-    poems = engine.database_manager.retrieve_all_poem_entries()
+    poems = engine.database_manager.retrieve_active_poem_entries()
     if not poems:
         poem_id = engine.database_manager.store_or_update_poem_entry(
             raw_text=OPENING_POEM["raw_text"],
@@ -149,12 +164,15 @@ def _ensure_opening_poem() -> None:
             target_language=OPENING_POEM["target_language"],
             target_language_code=OPENING_POEM["target_language_code"],
         )
-        stored = engine.database_manager.retrieve_poem_entry_by_id(poem_id)
+        # The opening poem may already be in the library and switched off,
+        # which is how we got here. It cannot become live while it is out of
+        # the rotation, so put it back in.
+        stored = engine.database_manager.set_poem_active(poem_id, True)
         if stored:
-            _stage_stored_poem(stored, broadcast=False)
+            _make_poem_live(stored, broadcast=False)
         return
 
-    _stage_stored_poem(random.choice(poems), broadcast=False)
+    _make_poem_live(poem_deck.deal(poems), broadcast=False)
 
 
 _ensure_opening_poem()
@@ -226,7 +244,16 @@ def _append_event_to_jsonl(event: dict) -> None:
 
 
 async def _broadcast_event(event: dict) -> None:
-    await manager.broadcast(json.dumps(event, ensure_ascii=False))
+    await manager.broadcast(json.dumps(_event_for_clients(event), ensure_ascii=False))
+
+
+def _event_for_clients(event: dict) -> dict:
+    """Attach the last model exchange for the temporary debug panel."""
+    payload = dict(event)
+    getter = getattr(engine, "get_last_debug_exchange", None)
+    if callable(getter):
+        payload["debug"] = getter()
+    return payload
 
 
 async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_state: str):
@@ -249,6 +276,7 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
 
     # Fetch translation and synonyms (may populate cache). The call is
     # blocking, so it runs off the event loop to keep broadcasts flowing.
+    engine.begin_debug_trigger()
     translation_data = await asyncio.to_thread(
         engine.get_or_fetch_word_translation_with_synonyms,
         original_word,
@@ -377,7 +405,10 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
     global sequence_index
 
     acting_phase = engine.get_current_phase().name
-    await asyncio.to_thread(engine.process_next_sensor_trigger)
+    try:
+        await asyncio.to_thread(engine.process_next_sensor_trigger)
+    except Exception as exc:
+        print(f"✗ Trigger failed: {exc}")
 
     if engine.last_action_phase:
         acting_phase = engine.last_action_phase.name
@@ -401,7 +432,11 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
         "confidence": 0.8,
         # The versions the closing pass wrote and chose between, kept in the
         # stream so a run can be read back with its roads not taken.
-        "alternatives": ['\n'.join(draft) for draft in engine.last_block_drafts],
+        "alternatives": [
+            '\n'.join(str(part) for part in draft)
+            if isinstance(draft, (list, tuple)) else str(draft)
+            for draft in (engine.last_block_drafts or [])
+        ],
         "triggered_by_context": False,
         "context_snapshot": {
             "phase": acting_phase,
@@ -417,6 +452,32 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
     sequence_index += 1
 
 
+def _change_to_next_poem() -> bool:
+    """Put the next poem up once the one on screen has finished.
+
+    The trigger that lands on a finished poem spends itself on the change.
+    The new poem goes up in its original language, untranslated, and the
+    triggers after it do the translating: one trigger, one action.
+
+    Nothing is asked of the model here. The engine only rebuilds its queues
+    around the new text, so a poem change costs nothing.
+
+    Call this with _cycle_lock held. It re-initialises the engine, and every
+    other trigger path assumes that state holds still underneath it.
+    """
+    poems = engine.database_manager.retrieve_active_poem_entries()
+    following = poem_deck.deal(poems, previous_id=current_poem_id)
+    if following is None:
+        # Nothing is switched on, so there is nowhere to move to. Hold the
+        # finished poem rather than blanking the wall.
+        return False
+
+    # Broadcasts down the same path load_poem and next_poem use, so screens
+    # already connected change over without a reload.
+    _make_poem_live(following)
+    return True
+
+
 @app.post("/trigger")
 async def trigger():
     """Advance the transformation by one trigger and broadcast the change.
@@ -428,6 +489,10 @@ async def trigger():
     page, the next triggers run that same word-then-gather process back toward
     the original language.
 
+    Once a poem has finished its whole journey, the next trigger changes the
+    poem instead of translating: the sensor is the only thing driving an
+    unattended wall, so the rotation has to turn on it.
+
     The work runs as a background task so the request returns immediately;
     clients see the result over the WebSocket.
     """
@@ -438,13 +503,19 @@ async def trigger():
         # One lock across every phase. Without it, triggers arriving in quick
         # succession would interleave and rewrite the same part of the poem.
         async with _cycle_lock:
+            # Read inside the lock, never captured before it. Two triggers
+            # arriving together on a finished poem both queue here; the
+            # first changes the poem, and the second must see the new
+            # poem's phase rather than the finished one's, or it would deal
+            # a second poem and skip one entirely.
             if engine.get_current_phase() == TransformationPhase.COMPLETE:
+                _change_to_next_poem()
                 return
 
             prev_state = engine.get_current_transformation_state()
 
             in_phase_1 = (
-                engine.get_current_phase() == TransformationPhase.PHASE_1_WORD_BY_WORD
+                engine.get_current_phase() == TransformationPhase.WORDS
             )
             word_index = engine.claim_next_phase_1_word_index() if in_phase_1 else None
 
@@ -470,10 +541,181 @@ async def languages():
     }
 
 
-@app.get("/poems")
-async def poems():
-    """List previously saved poems, newest first."""
-    return {"poems": engine.database_manager.retrieve_all_poem_entries()}
+STAGE_NAMES = ("words", "phrases", "lines")
+
+
+class EditPoemRequest(BaseModel):
+    """Changes to the poem itself rather than to one of its readings."""
+    active: Optional[bool] = None
+
+
+class NewIterationRequest(BaseModel):
+    """A reading typed in by hand rather than returned by the model."""
+    stage: str
+    content: str
+    source_text: Optional[str] = None
+    note: Optional[str] = None
+    journey: Optional[str] = "out"
+
+
+class EditIterationRequest(BaseModel):
+    """A correction to a reading already on the record."""
+    content: Optional[str] = None
+    source_text: Optional[str] = None
+    note: Optional[str] = None
+
+
+def _require_poem(poem_id: int) -> Dict:
+    poem = engine.database_manager.retrieve_poem_entry_by_id(poem_id)
+    if not poem:
+        raise HTTPException(status_code=404, detail=f"No poem with id {poem_id}")
+    return poem
+
+
+def _require_stage(stage: str) -> str:
+    stage = (stage or "").strip().lower()
+    if stage not in STAGE_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown stage '{stage}'. Expected one of: {', '.join(STAGE_NAMES)}"
+        )
+    return stage
+
+
+@app.get("/api/poems")
+async def list_poems():
+    """Every saved poem, newest first, with how much of a record it has."""
+    poems = engine.database_manager.retrieve_all_poem_entries()
+    for poem in poems:
+        counts = engine.database_manager.count_poem_iterations_by_stage(poem["id"])
+        poem["iteration_counts"] = {stage: counts.get(stage, 0) for stage in STAGE_NAMES}
+        poem["iteration_total"] = sum(counts.values())
+        poem["is_live"] = poem["id"] == current_poem_id
+    return {"poems": poems}
+
+
+@app.get("/api/poems/{poem_id}")
+async def read_poem(poem_id: int):
+    """One poem and every reading recorded for it, grouped by stage."""
+    poem = _require_poem(poem_id)
+    iterations = engine.database_manager.retrieve_poem_iterations(poem_id)
+
+    stages = {stage: [] for stage in STAGE_NAMES}
+    for iteration in iterations:
+        stages.setdefault(iteration["stage"], []).append(iteration)
+
+    return {
+        "poem": poem,
+        "stages": stages,
+        "is_live": poem_id == current_poem_id,
+    }
+
+
+@app.patch("/api/poems/{poem_id}")
+async def edit_poem(poem_id: int, payload: EditPoemRequest):
+    """Switch a poem into or out of the rotation."""
+    _require_poem(poem_id)
+
+    if payload.active is None:
+        raise HTTPException(status_code=400, detail="Nothing to change")
+
+    return {"poem": engine.database_manager.set_poem_active(poem_id, payload.active)}
+
+
+@app.post("/api/poems/{poem_id}/live")
+async def make_poem_live(poem_id: int):
+    """Show a saved poem on the screen right now.
+
+    A hand override, so the poem's place in the rotation is left as it is: a
+    poem that has been switched off can be shown without being switched back
+    on, and the deck goes on stepping over it afterwards. Nothing is pinned
+    either -- the next trigger deals the next card as usual, only never this
+    same poem twice running.
+    """
+    poem = _require_poem(poem_id)
+    _make_poem_live(poem)
+    return {"poem": poem, "is_live": True}
+
+
+@app.delete("/api/poems/{poem_id}")
+async def remove_poem(poem_id: int):
+    """Delete a poem and every reading recorded for it.
+
+    The live poem cannot be deleted while the screen is showing it, because
+    the engine is already holding it and would go on displaying a poem that
+    no longer exists. Switch it off or move on to another one first.
+    """
+    _require_poem(poem_id)
+
+    if poem_id == current_poem_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This poem is live. Move to another poem before deleting it."
+        )
+
+    readings = len(engine.database_manager.retrieve_poem_iterations(poem_id))
+    engine.database_manager.delete_poem_entry(poem_id)
+    return {"status": "deleted", "id": poem_id, "readings_deleted": readings}
+
+
+@app.post("/api/poems/{poem_id}/iterations")
+async def add_iteration(poem_id: int, payload: NewIterationRequest):
+    """Add a reading of your own to a poem's record."""
+    _require_poem(poem_id)
+    stage = _require_stage(payload.stage)
+
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="A reading cannot be empty")
+
+    iteration_id = engine.database_manager.record_poem_iteration(
+        poem_id,
+        stage,
+        content,
+        source_text=(payload.source_text or "").strip(),
+        note=(payload.note or "").strip(),
+        journey=(payload.journey or "out").strip().lower(),
+        origin="hand",
+    )
+    return {"iteration": engine.database_manager.retrieve_poem_iteration_by_id(iteration_id)}
+
+
+@app.patch("/api/iterations/{iteration_id}")
+async def edit_iteration(iteration_id: int, payload: EditIterationRequest):
+    """Change a reading, whether the model wrote it or you did."""
+    if payload.content is not None and not payload.content.strip():
+        raise HTTPException(status_code=400, detail="A reading cannot be empty")
+
+    iteration = engine.database_manager.update_poem_iteration(
+        iteration_id,
+        content=payload.content,
+        note=payload.note,
+        source_text=payload.source_text,
+    )
+    if not iteration:
+        raise HTTPException(status_code=404, detail=f"No reading with id {iteration_id}")
+    return {"iteration": iteration}
+
+
+@app.delete("/api/iterations/{iteration_id}")
+async def remove_iteration(iteration_id: int):
+    """Take a reading off the record."""
+    if not engine.database_manager.delete_poem_iteration(iteration_id):
+        raise HTTPException(status_code=404, detail=f"No reading with id {iteration_id}")
+    return {"status": "deleted", "id": iteration_id}
+
+
+@app.get("/poems", include_in_schema=False)
+async def poems_page():
+    """The library, as a page."""
+    return FileResponse(STATIC_DIR / "poems.html")
+
+
+@app.get("/poems/{poem_id}", include_in_schema=False)
+async def poem_page(poem_id: int):
+    """One poem's record, as a page. The id is read back from the URL."""
+    _require_poem(poem_id)
+    return FileResponse(STATIC_DIR / "poem.html")
 
 
 @app.post("/load_poem")
@@ -520,27 +762,30 @@ async def load_poem(payload: LoadPoemRequest):
         "final_translation": (payload.final_translation or "").strip() or None,
         **language_pair
     }
-    return _stage_stored_poem(stored_poem)
+    return _make_poem_live(stored_poem)
 
 
 @app.post("/next_poem")
 async def next_poem():
-    """Put the next saved poem on stage, wrapping around the library."""
-    poems = engine.database_manager.retrieve_all_poem_entries()
+    """Make another poem in the rotation live, chosen at random.
+
+    Random, but dealt from a shuffled deck rather than drawn fresh each
+    time: every poem in the rotation comes up once before any of them comes
+    round again, and a new cut never opens on the poem that was just up.
+
+    Only poems that are switched on are dealt. A poem that has been turned
+    off keeps its place in the library and its record, and is simply stepped
+    over here. If the rotation is empty there is nothing to move to, and the
+    poem already up stays where it is.
+    """
+    poems = engine.database_manager.retrieve_active_poem_entries()
     if not poems:
-        raise HTTPException(status_code=404, detail="No poems saved yet")
+        raise HTTPException(
+            status_code=404,
+            detail="No poems are switched on. Turn one on from the poems page."
+        )
 
-    # The list comes newest-first. Reverse so "next" walks in the order they
-    # were added, then around again.
-    poems = list(reversed(poems))
-    ids = [poem["id"] for poem in poems]
-
-    if current_poem_id in ids:
-        next_index = (ids.index(current_poem_id) + 1) % len(ids)
-    else:
-        next_index = 0
-
-    return _stage_stored_poem(poems[next_index])
+    return _make_poem_live(poem_deck.deal(poems, previous_id=current_poem_id))
 
 
 @app.get("/state")
@@ -573,7 +818,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 **_current_language_pair()
             }
         }
-        await manager.send_personal_message(json.dumps(init_event, ensure_ascii=False), websocket)
+        await manager.send_personal_message(
+            json.dumps(_event_for_clients(init_event), ensure_ascii=False),
+            websocket
+        )
 
         while True:
             # keep connection open; ignore incoming messages

@@ -130,71 +130,11 @@ STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 # advance, so the target is not a countdown.
 BLOCK_GROWTH_WORD_SIZES = [2, 3]
 
-# How many times the poem is worked over at each of the larger block sizes.
-# Phase 2's two- and three-word blocks are literal and have one answer, so they
-# are visited once. Raise this only if you add larger sizes back into Phase 2.
-BLOCK_REVISION_PASSES = 1
-
-# Blocks up to this many words are still assembling the sentence, so they are
-# translated literally. Anything longer is translated as poetry.
-LITERAL_BLOCK_MAX_WORDS = 3
-
-# A revision can come back reading exactly as it did before, which would leave
-# the viewer's trigger with nothing to show. The trigger moves on to the next
-# block instead, up to this many times, rather than calling the API all day.
-MAX_BLOCKS_PER_TRIGGER = 3
-
-# Gathering has no click budget to the target. If this many gathering
-# triggers in a row change nothing, write one destination line so the
-# poem can still arrive instead of circling nearby wording forever.
-GATHER_STALL_BEFORE_LANDING = 3
-
-# A gathering rewrite is applied only when the model names one of these
-# defects. "More poetic" is not on the list.
-GATHER_REAL_DEFECTS = (
-    "wrong_sense",
-    "grammar",
-    "crib",
-    "dropped_image",
-    "closer_to_original",
-    "closer_to_destination",
-)
-
-# On the way back, leftover English is itself a defect.
-RETURN_REAL_DEFECTS = (
-    "still_english",
-    "closer_to_source",
-    "wrong_sense",
-    "grammar",
-    "crib",
-    "dropped_image",
-)
-
-# How each kind of block is translated. A two-word block wants the most likely
-# wording, so it runs cold; the closing pass over the whole poem wants room to
-# find a phrasing worth reading, so it runs warm and writes several drafts
-# before choosing between them.
-BLOCK_TRANSLATION_MODE_LITERAL = "literal"
-BLOCK_TRANSLATION_MODE_POETIC = "poetic"
-BLOCK_TRANSLATION_MODE_FINAL = "final"
-
-BLOCK_TRANSLATION_MODES = {
-    BLOCK_TRANSLATION_MODE_LITERAL: {
-        "temperature": 0.2,
-        "max_tokens": 600,
-        "draft_count": 1,
-    },
-    BLOCK_TRANSLATION_MODE_POETIC: {
-        "temperature": 0.6,
-        "max_tokens": 900,
-        "draft_count": 1,
-    },
-    BLOCK_TRANSLATION_MODE_FINAL: {
-        "temperature": 0.85,
-        "max_tokens": 2000,
-        "draft_count": 3,
-    },
-}
+# Stage 3 asks for several complete readings of the poem in one call and
+# shows them worst first. Five attempts written to settle on one right
+# answer come back nearly identical, so this stage runs warmer than the
+# others, where a single accurate reading is what is wanted.
+VARIATION_TEMPERATURE = 0.95
 
 # Every pass over a block is asked to improve how the poem currently reads,
 # not to translate the source afresh, so its answer depends on the state of the

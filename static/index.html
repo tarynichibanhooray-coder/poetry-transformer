@@ -13,22 +13,71 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #f3efe6;
-      font-family: Georgia, "Times New Roman", serif;
-      color: #1a1a1a;
+      background: #000;
+      font-family: Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      color: #f4efe6;
     }
 
     #poem {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.42em;
       margin: 0;
-      padding: 8vh 8vw;
-      max-width: 18em;
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: clamp(1.85rem, 4.6vw, 3.4rem);
-      line-height: 1.45;
+      padding: 8vh 6vw;
+      max-width: min(42em, 94vw);
+      font-family: Palatino, "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      font-size: clamp(1.55rem, 3.8vw, 2.85rem);
+      line-height: 1.2;
       text-align: center;
-      white-space: pre-wrap;
       background: none;
+      overflow: visible;
       transition: color 0.7s ease;
+    }
+
+    .line {
+      display: inline-flex;
+      flex-wrap: nowrap;
+      justify-content: center;
+      align-items: stretch;
+      gap: 0;
+      max-width: 100%;
+      background: none;
+      overflow: visible;
+      transform: rotate(var(--tilt, 0deg)) translateX(var(--shift, 0px));
+    }
+    .line-stanza {
+      margin-top: 0.7em;
+    }
+
+    .scrap {
+      position: relative;
+      z-index: 0;
+      display: inline-block;
+      padding: 0.42em 0.78em 0.46em;
+      background: none;
+      overflow: visible;
+    }
+    .scrap + .scrap {
+      margin-left: 1px;
+    }
+    .scrap.open-left {
+      margin-left: 0.34em;
+    }
+    .scrap::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: #fff;
+      clip-path: polygon(
+        var(--lx0, 0px) var(--tl, 0px),
+        calc(100% - var(--rx0, 0px)) var(--tr, 0px),
+        calc(100% - var(--rx1, 0px)) calc(100% - var(--br, 0px)),
+        var(--lx1, 0px) calc(100% - var(--bl, 0px))
+      );
+      filter: drop-shadow(1px 2px 1.5px rgba(0, 0, 0, 0.45));
+      pointer-events: none;
+      z-index: -1;
     }
 
     .word {
@@ -46,7 +95,7 @@
       padding: 0;
       border: 0;
       background: transparent;
-      color: inherit;
+      color: #f4efe6;
       opacity: 0.28;
       font: inherit;
       font-size: 1.75rem;
@@ -65,7 +114,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      background: rgba(243, 239, 230, 0.92);
+      background: rgba(0, 0, 0, 0.92);
+      color: #f4efe6;
       z-index: 2;
     }
     #intro[hidden] { display: none; }
@@ -87,6 +137,37 @@
       padding: 0;
       margin: -1px;
     }
+
+    #debug-panel {
+      display: none;
+    }
+    #debug-panel h2 {
+      margin: 0 0 0.45rem;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #9a9488;
+    }
+    #debug-stage {
+      margin: 0 0 0.65rem;
+      color: #f4efe6;
+      white-space: pre-wrap;
+    }
+    #debug-panel h3 {
+      margin: 0.55rem 0 0.2rem;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #9a9488;
+    }
+    #debug-panel pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #c9c3b8;
+    }
   </style>
 </head>
 <body>
@@ -94,8 +175,17 @@
     <p id="intro-text">Select the spacebar to trigger a translation.</p>
   </div>
 
-  <pre id="poem"></pre>
+  <div id="poem"></div>
   <button id="next-poem" type="button" title="Next poem" aria-label="Next poem">→</button>
+
+  <aside id="debug-panel" aria-label="Translation debug">
+    <h2>Debug</h2>
+    <div id="debug-stage">waiting for a trigger</div>
+    <h3>Request</h3>
+    <pre id="debug-request">(none yet)</pre>
+    <h3>Response</h3>
+    <pre id="debug-response">(none yet)</pre>
+  </aside>
 
   <div id="sr-live" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
@@ -104,6 +194,9 @@
     const nextBtn = document.getElementById('next-poem');
     const introEl = document.getElementById('intro');
     const srLive = document.getElementById('sr-live');
+    const debugStage = document.getElementById('debug-stage');
+    const debugRequest = document.getElementById('debug-request');
+    const debugResponse = document.getElementById('debug-response');
 
     const base = window.location.origin;
     const FADE_MS = 900;
@@ -134,6 +227,23 @@
       return choices[Math.floor(Math.random() * choices.length)] || POEM_COLORS[0];
     }
 
+    function showDebug(debug) {
+      if (!debug) return;
+      const stage = debug.stage || '';
+      const note = debug.note || '';
+      debugStage.textContent = note ? stage + '\n' + note : (stage || 'waiting for a trigger');
+      debugRequest.textContent = debug.request || '(no model call this trigger)';
+      let response = debug.response || '(no model call this trigger)';
+      try {
+        if (response && response[0] === '{') {
+          response = JSON.stringify(JSON.parse(response), null, 2);
+        }
+      } catch (err) {
+        // keep the raw text
+      }
+      debugResponse.textContent = response;
+    }
+
     function announce(text) {
       if (!text) return;
       srLive.textContent = '';
@@ -150,25 +260,212 @@
       return filled;
     }
 
-    function markupFromSlots(words, separators) {
+    function unitFromSeed(seed, salt) {
+      const value = Math.sin((seed + 1) * salt) * 43758.5453;
+      return value - Math.floor(value);
+    }
+
+    function tiltFor(index, scale) {
+      return (unitFromSeed(index, 12.9898) * 2 - 1) * scale;
+    }
+
+    function tearKey(indices) {
+      return (indices || []).slice().sort((a, b) => a - b).join(',');
+    }
+
+    function lineGroups(words, separators) {
       const filled = filledIndices(words);
-      return filled.map((index, position) => {
-        const span = `<span class="word" data-index="${index}">${escapeHtml(words[index])}</span>`;
-        if (position + 1 >= filled.length) return span;
+      const lines = [];
+      let current = [];
+      let pendingStanza = false;
+
+      const flush = () => {
+        if (!current.length) return;
+        lines.push({ indices: current, stanza: pendingStanza });
+        current = [];
+        pendingStanza = false;
+      };
+
+      filled.forEach((index, position) => {
+        current.push(index);
+        if (position + 1 >= filled.length) {
+          flush();
+          return;
+        }
         const separator = separators[filled[position + 1] - 1];
-        return span + escapeHtml(separator === undefined ? ' ' : separator);
+        if (typeof separator === 'string' && separator.includes('\n')) {
+          flush();
+          pendingStanza = (separator.match(/\n/g) || []).length > 1;
+        }
+      });
+
+      return lines;
+    }
+
+    function tearLine(indices, changedSet) {
+      const changedOnLine = indices.filter(index => changedSet.has(index));
+      if (!changedOnLine.length) return [indices];
+
+      const first = Math.min(...changedOnLine);
+      const last = Math.max(...changedOnLine);
+      const pieces = [];
+      const before = indices.filter(index => index < first);
+      const middle = indices.filter(index => index >= first && index <= last);
+      const after = indices.filter(index => index > last);
+      if (before.length) pieces.push(before);
+      if (middle.length) pieces.push(middle);
+      if (after.length) pieces.push(after);
+      return pieces;
+    }
+
+    function wordsMarkup(words, indices) {
+      return indices.map((index, position) => {
+        const word = `<span class="word" data-index="${index}">${escapeHtml(words[index])}</span>`;
+        return position === 0 ? word : ` ${word}`;
+      }).join('');
+    }
+
+    function slashPx(seed) {
+      const magnitude = 7 + unitFromSeed(seed, 3.17) * 9;
+      return (unitFromSeed(seed, 8.53) > 0.5 ? 1 : -1) * magnitude;
+    }
+
+    function jitterPx(seed, min, max) {
+      return min + unitFromSeed(seed, 2.41) * (max - min);
+    }
+
+    function verticalPair(slash) {
+      const size = Math.abs(slash);
+      if (slash >= 0) {
+        return { left: { rx0: 0, rx1: size }, right: { lx0: size, lx1: 0 } };
+      }
+      return { left: { rx0: size, rx1: 0 }, right: { lx0: 0, lx1: size } };
+    }
+
+    function horizontalPair(slash) {
+      const size = Math.abs(slash);
+      if (slash >= 0) {
+        return { upper: { bl: 0, br: size }, lower: { tl: size, tr: 0 } };
+      }
+      return { upper: { bl: size, br: 0 }, lower: { tl: 0, tr: size } };
+    }
+
+    function scrapStyle(cuts) {
+      const keys = ['tl', 'tr', 'bl', 'br', 'lx0', 'lx1', 'rx0', 'rx1'];
+      return keys.map(key => `--${key}:${Number(cuts[key] || 0).toFixed(1)}px`).join(';');
+    }
+
+    function seamStartsPiece(index) {
+      return seams.has(index);
+    }
+
+    function addSeamsAround(lineIndices, changedSet) {
+      const changedOnLine = lineIndices.filter(index => changedSet.has(index));
+      if (!changedOnLine.length) return;
+      const first = Math.min(...changedOnLine);
+      const last = Math.max(...changedOnLine);
+      if (lineIndices.some(index => index < first)) seams.add(first);
+      const after = lineIndices.find(index => index > last);
+      if (after !== undefined) seams.add(after);
+    }
+
+    function splitLine(indices) {
+      const pieces = [];
+      let current = [];
+      indices.forEach((index, position) => {
+        if (position > 0 && seamStartsPiece(index)) {
+          pieces.push(current);
+          current = [index];
+        } else {
+          current.push(index);
+        }
+      });
+      if (current.length) pieces.push(current);
+      return pieces;
+    }
+
+    function pieceOpens(piece, changedSet, lineIndices) {
+      if (!changedSet.size || !piece.length) return false;
+      const changedOnLine = lineIndices.filter(index => changedSet.has(index));
+      if (!changedOnLine.length) return false;
+      const first = Math.min(...changedOnLine);
+      const last = Math.max(...changedOnLine);
+      const after = lineIndices.find(index => index > last);
+      return piece[0] === first || piece[0] === after;
+    }
+
+    function scrapMarkup(words, indices, cuts, openLeft) {
+      const open = openLeft ? ' open-left' : '';
+      return `<span class="scrap${open}" style="${scrapStyle(cuts || {})}">${wordsMarkup(words, indices)}</span>`;
+    }
+
+    function markupFromSlots(words, separators, changingIndices) {
+      const changedSet = new Set(changingIndices || []);
+      const groups = lineGroups(words, separators || []);
+      const betweenLines = groups.slice(0, -1).map(line => slashPx(line.indices[0] + 40));
+
+      return groups.map((line, lineIndex) => {
+        if (!line.indices.length) return '';
+        if (changedSet.size) addSeamsAround(line.indices, changedSet);
+        const pieces = splitLine(line.indices);
+        if (!pieces.length) return '';
+        const tilt = tiltFor(line.indices[0], 1.6).toFixed(2);
+        const shift = (unitFromSeed(line.indices[0], 78.233) * 2 - 1) * 10;
+        const extra = line.stanza ? ' line-stanza' : '';
+
+        const above = lineIndex === 0 ? null : horizontalPair(betweenLines[lineIndex - 1]).lower;
+        const below = lineIndex === groups.length - 1
+          ? null
+          : horizontalPair(betweenLines[lineIndex]).upper;
+        const top = above || {
+          tl: jitterPx(line.indices[0] + 1, 0, 6),
+          tr: jitterPx(line.indices[0] + 2, 0, 6)
+        };
+        const bot = below || {
+          bl: jitterPx(line.indices[0] + 3, 0, 6),
+          br: jitterPx(line.indices[0] + 4, 0, 6)
+        };
+
+        const outerLeft = {
+          lx0: jitterPx(line.indices[0] + 5, 0, 8),
+          lx1: jitterPx(line.indices[0] + 6, 0, 8)
+        };
+        const lastWord = line.indices[line.indices.length - 1];
+        const outerRight = {
+          rx0: jitterPx(lastWord + 7, 0, 8),
+          rx1: jitterPx(lastWord + 8, 0, 8)
+        };
+
+        const splits = pieces.slice(0, -1).map(piece => slashPx(piece[0] + 90));
+        const scraps = pieces.map((piece, pieceIndex) => {
+          if (!piece.length) return '';
+          const cuts = Object.assign({}, top, bot);
+          if (pieceIndex === 0) Object.assign(cuts, outerLeft);
+          else Object.assign(cuts, verticalPair(splits[pieceIndex - 1]).right);
+          if (pieceIndex === pieces.length - 1) Object.assign(cuts, outerRight);
+          else Object.assign(cuts, verticalPair(splits[pieceIndex]).left);
+          return scrapMarkup(words, piece, cuts, pieceOpens(piece, changedSet, line.indices));
+        });
+
+        return `<span class="line${extra}" style="--tilt:${tilt}deg;--shift:${shift.toFixed(1)}px">${scraps.join('')}</span>`;
       }).join('');
     }
 
     function markupFromText(stateText) {
       let wordIndex = 0;
-      return (stateText || '').split('\n').map(line => {
-        return line.split(/\s+/).filter(Boolean).map(word => {
-          const span = `<span class="word" data-index="${wordIndex}">${escapeHtml(word)}</span>`;
+      return (stateText || '').split('\n').map((line, lineIndex, lines) => {
+        const indices = [];
+        const words = [];
+        line.split(/\s+/).filter(Boolean).forEach(word => {
+          indices.push(wordIndex);
+          words[wordIndex] = word;
           wordIndex += 1;
-          return span;
-        }).join(' ');
-      }).join('\n');
+        });
+        if (!indices.length) return '';
+        const extra = lineIndex > 0 && !lines[lineIndex - 1].trim() ? ' line-stanza' : '';
+        const tilt = tiltFor(indices[0], 1.6).toFixed(2);
+        return `<span class="line${extra}" style="--tilt:${tilt}deg">${scrapMarkup(words, indices)}</span>`;
+      }).join('');
     }
 
     function paintPoem(color) {
@@ -177,9 +474,9 @@
       poemEl.querySelectorAll('.word').forEach(el => { el.style.color = ''; });
     }
 
-    function renderSlots(words, separators, stateText) {
+    function renderSlots(words, separators, stateText, changingIndices) {
       poemEl.innerHTML = Array.isArray(words)
-        ? markupFromSlots(words, separators || [])
+        ? markupFromSlots(words, separators || [], changingIndices)
         : markupFromText(stateText);
     }
 
@@ -190,37 +487,66 @@
       await wait(FADE_MS);
     }
 
-    async function showChangedWords(indices, words, separators, stateText, color, { recolorPoem }) {
-      const existing = indices.map(wordEl);
-      const canUpdateInPlace = existing.every(Boolean) && Array.isArray(words);
+    async function showChangedWords(indices, words, separators, stateText, color, { recolorPoem, heal }) {
+      const currentWords = Array.isArray(lastWords) && lastWords.length ? lastWords : words;
+      const structureChanged = filledIndices(currentWords).join(',') !== filledIndices(words).join(',');
 
-      await fadeOpacity(existing, 0);
+      try {
+        if (Array.isArray(currentWords) && tornFor !== tearKey(indices)) {
+          renderSlots(currentWords, separators, stateText, indices);
+          paintPoem(poemColor);
+          tornFor = tearKey(indices);
+          await wait(40);
+        }
 
-      if (canUpdateInPlace) {
-        existing.forEach((el, i) => {
-          const index = indices[i];
-          el.textContent = words[index] || '';
-          el.style.color = color;
-        });
-      } else {
-        renderSlots(words, separators, stateText);
-        paintPoem(recolorPoem ? color : poemColor);
-        indices.forEach(index => {
-          const el = wordEl(index);
-          if (el) {
-            el.style.opacity = '0';
+        const existing = indices.map(wordEl);
+        const canUpdateInPlace = (
+          !structureChanged
+          && existing.every(Boolean)
+          && Array.isArray(words)
+        );
+
+        await fadeOpacity(existing, 0);
+
+        if (canUpdateInPlace) {
+          existing.forEach((el, i) => {
+            const index = indices[i];
+            el.textContent = words[index] || '';
             el.style.color = color;
-          }
-        });
-        // Let the browser apply the hidden state before fading in.
-        await wait(30);
-      }
+          });
+        } else {
+          renderSlots(words, separators, stateText, indices);
+          paintPoem(recolorPoem ? color : poemColor);
+          tornFor = tearKey(indices);
+          indices.forEach(index => {
+            const el = wordEl(index);
+            if (el) {
+              el.style.opacity = '0';
+              el.style.color = color;
+            }
+          });
+          await wait(30);
+        }
 
-      await fadeOpacity(indices.map(wordEl), 1);
+        await fadeOpacity(indices.map(wordEl), 1);
 
-      if (recolorPoem) {
-        paintPoem(color);
-        await wait(COLOR_MS);
+        if (recolorPoem) {
+          paintPoem(color);
+          await wait(COLOR_MS);
+        }
+
+        if (heal && Array.isArray(words)) {
+          renderSlots(words, separators, stateText, null);
+          paintPoem(poemColor);
+          tornFor = null;
+        }
+      } catch (err) {
+        console.error(err);
+        if (Array.isArray(words)) {
+          renderSlots(words, separators, stateText, null);
+          paintPoem(color || poemColor);
+        }
+        tornFor = null;
       }
     }
 
@@ -237,6 +563,8 @@
     }
 
     let lastWords = [];
+    let tornFor = null;
+    let seams = new Set();
 
     function enqueue(event) {
       play = play.then(() => present(event)).catch(err => console.error(err));
@@ -256,8 +584,10 @@
       if (isNewPoem) {
         const hadPoem = poemEl.childNodes.length > 0;
         if (hadPoem) await fadeOpacity([...poemEl.querySelectorAll('.word')], 0);
-        renderSlots(words, separators, stateText);
+        seams = new Set();
+        renderSlots(words, separators, stateText, null);
         paintPoem(nextColor);
+        tornFor = null;
         poemEl.querySelectorAll('.word').forEach(el => { el.style.opacity = hadPoem ? '0' : '1'; });
         if (hadPoem) {
           await wait(30);
@@ -277,11 +607,21 @@
           lastWords = words ? words.slice() : lastWords;
           return;
         }
-        indices = changed;
+        indices = changed.filter(index => (
+          !Array.isArray(words) || index < words.length
+        ));
+      }
+
+      if (!indices.length && Array.isArray(words)) {
+        renderSlots(words, separators, stateText, null);
+        lastWords = words.slice();
+        tornFor = null;
+        return;
       }
 
       await showChangedWords(indices, words, separators, stateText, nextColor, {
-        recolorPoem: !isIntermediate
+        recolorPoem: !isIntermediate,
+        heal: !isIntermediate
       });
 
       lastWords = words ? words.slice() : [];
@@ -304,6 +644,7 @@
     ws.onmessage = (evt) => {
       try {
         const event = JSON.parse(evt.data);
+        if (event && event.debug) showDebug(event.debug);
         if (event) enqueue(event);
       } catch (err) {
         console.error('Invalid event', err);

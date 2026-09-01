@@ -49,6 +49,11 @@ class DatabaseManager:
                 self.cursor.execute("PRAGMA synchronous=NORMAL;")
                 # Set an automatic checkpoint interval (in pages). Tune if needed.
                 self.cursor.execute("PRAGMA wal_autocheckpoint=100;")
+                # SQLite ignores foreign keys unless they are switched on for
+                # each connection. Without this the ON DELETE CASCADE on a
+                # poem's readings is only a comment, and deleting a poem would
+                # leave its readings behind with nothing to reach them by.
+                self.cursor.execute("PRAGMA foreign_keys=ON;")
                 if config.DEBUG_MODE:
                     print("✓ Enabled WAL journal_mode and pragmas for SQLite")
             except Exception as e:
@@ -68,6 +73,7 @@ class DatabaseManager:
         self.create_translation_history_table()
         # Create poems table for persisted poem management (added here to ensure schema exists)
         self.create_poems_table()
+        self.create_poem_iterations_table()
         self.commit_database_changes()
 
     def create_word_cache_table(self) -> None:
@@ -224,12 +230,14 @@ class DatabaseManager:
             lines_json TEXT,
             stanza_delimiter TEXT,
             final_translation TEXT,
+            active INTEGER NOT NULL DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
         self.cursor.execute(create_table_sql)
         self.migrate_poems_table_to_final_translation()
+        self.migrate_poems_table_to_active_flag()
 
     def migrate_poems_table_to_final_translation(self) -> None:
         """
@@ -248,6 +256,225 @@ class DatabaseManager:
             print("✓ Adding final_translation to the poems table")
 
         self.cursor.execute("ALTER TABLE poems ADD COLUMN final_translation TEXT")
+
+    def migrate_poems_table_to_active_flag(self) -> None:
+        """
+        Add the active flag to a poems table created without it
+
+        Every poem that already exists was in the rotation before the flag
+        was invented, so the column defaults to active and nothing quietly
+        disappears from the wall the first time the server restarts.
+        """
+        self.cursor.execute("PRAGMA table_info(poems)")
+        columns = [row['name'] for row in self.cursor.fetchall()]
+
+        if 'active' in columns:
+            return
+
+        if config.DEBUG_MODE:
+            print("✓ Adding active to the poems table")
+
+        self.cursor.execute(
+            "ALTER TABLE poems ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+        )
+
+    def create_poem_iterations_table(self) -> None:
+        """
+        Create the table that keeps every reading a poem has been given
+
+        The stream in output/ is a log of a performance and is thrown away
+        between runs. This table is the poem's own record: one row for every
+        reading the model returned for it, and every reading typed by hand
+        afterwards, so a poem can be read back and corrected later.
+
+        Columns:
+            poem_id: The poem the reading belongs to
+            stage: 'words', 'phrases' or 'lines'
+            journey: 'out' on the way to the target, 'home' coming back
+            position: Order within the stage, in the order they arrived
+            source_text: What was sent to be translated
+            content: The reading that came back
+            note: What the stage said it was doing, or what a variation holds
+            alternatives_json: The other senses offered alongside the reading
+            origin: 'api' for a model answer, 'hand' for one typed in
+            edited: Whether a model answer has since been changed by hand
+        """
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS poem_iterations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            poem_id INTEGER NOT NULL,
+            stage TEXT NOT NULL,
+            journey TEXT NOT NULL DEFAULT 'out',
+            position INTEGER NOT NULL DEFAULT 0,
+            source_text TEXT NOT NULL DEFAULT '',
+            content TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            alternatives_json TEXT NOT NULL DEFAULT '[]',
+            origin TEXT NOT NULL DEFAULT 'api',
+            edited INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (poem_id) REFERENCES poems(id) ON DELETE CASCADE
+        );
+        """
+        self.cursor.execute(create_table_sql)
+        self.cursor.execute(
+            "CREATE INDEX IF NOT EXISTS poem_iterations_by_poem "
+            "ON poem_iterations (poem_id, stage, position)"
+        )
+
+    def record_poem_iteration(
+        self,
+        poem_id: int,
+        stage: str,
+        content: str,
+        source_text: str = '',
+        note: str = '',
+        alternatives: List[str] = None,
+        journey: str = 'out',
+        origin: str = 'api'
+    ) -> Optional[int]:
+        """
+        Add one reading to a poem's record
+
+        A poem the engine was handed directly, with no library row behind it,
+        has nothing to attach readings to. That is a normal way to run the
+        engine in a test, so it is not an error; the reading is dropped.
+
+        Returns:
+            ID of the stored reading, or None if there was no poem to file it under
+        """
+        if not poem_id:
+            return None
+
+        content = (content or '').strip()
+        if not content:
+            return None
+
+        insert_sql = """
+        INSERT INTO poem_iterations
+        (poem_id, stage, journey, position, source_text, content, note,
+         alternatives_json, origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        self.cursor.execute(
+            insert_sql,
+            (
+                poem_id,
+                stage,
+                journey,
+                self.next_iteration_position(poem_id, stage),
+                source_text or '',
+                content,
+                note or '',
+                json.dumps(alternatives or [], ensure_ascii=False),
+                origin,
+            )
+        )
+        self.commit_database_changes()
+        return self.cursor.lastrowid
+
+    def next_iteration_position(self, poem_id: int, stage: str) -> int:
+        """The next slot at the end of a stage's list."""
+        self.cursor.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 AS next "
+            "FROM poem_iterations WHERE poem_id = ? AND stage = ?",
+            (poem_id, stage)
+        )
+        return self.cursor.fetchone()['next']
+
+    def retrieve_poem_iterations(self, poem_id: int) -> List[Dict]:
+        """Every reading recorded for a poem, in the order it arrived."""
+        query = """
+        SELECT id, poem_id, stage, journey, position, source_text, content,
+               note, alternatives_json, origin, edited, created_at, updated_at
+        FROM poem_iterations
+        WHERE poem_id = ?
+        ORDER BY stage, position, id
+        """
+        self.cursor.execute(query, (poem_id,))
+        return [self._iteration_from_row(row) for row in self.cursor.fetchall()]
+
+    def retrieve_poem_iteration_by_id(self, iteration_id: int) -> Optional[Dict]:
+        query = """
+        SELECT id, poem_id, stage, journey, position, source_text, content,
+               note, alternatives_json, origin, edited, created_at, updated_at
+        FROM poem_iterations
+        WHERE id = ?
+        """
+        self.cursor.execute(query, (iteration_id,))
+        row = self.cursor.fetchone()
+        return self._iteration_from_row(row) if row else None
+
+    def update_poem_iteration(
+        self,
+        iteration_id: int,
+        content: str = None,
+        note: str = None,
+        source_text: str = None
+    ) -> Optional[Dict]:
+        """
+        Change a recorded reading
+
+        A model answer that has been corrected is marked as edited rather
+        than relabelled as handwritten, so the record still shows that the
+        model answered here and that the answer was not left standing.
+        """
+        existing = self.retrieve_poem_iteration_by_id(iteration_id)
+        if not existing:
+            return None
+
+        content = existing['content'] if content is None else content.strip()
+        if not content:
+            return None
+
+        was_edited = existing['edited'] or content != existing['content']
+
+        self.cursor.execute(
+            """
+            UPDATE poem_iterations
+            SET content = ?, note = ?, source_text = ?, edited = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                content,
+                existing['note'] if note is None else note,
+                existing['source_text'] if source_text is None else source_text,
+                1 if was_edited and existing['origin'] == 'api' else existing['edited'],
+                iteration_id,
+            )
+        )
+        self.commit_database_changes()
+        return self.retrieve_poem_iteration_by_id(iteration_id)
+
+    def delete_poem_iteration(self, iteration_id: int) -> bool:
+        self.cursor.execute(
+            "DELETE FROM poem_iterations WHERE id = ?", (iteration_id,)
+        )
+        self.commit_database_changes()
+        return self.cursor.rowcount > 0
+
+    def count_poem_iterations_by_stage(self, poem_id: int) -> Dict[str, int]:
+        """How many readings each stage has, for the library listing."""
+        self.cursor.execute(
+            "SELECT stage, COUNT(*) AS count FROM poem_iterations "
+            "WHERE poem_id = ? GROUP BY stage",
+            (poem_id,)
+        )
+        return {row['stage']: row['count'] for row in self.cursor.fetchall()}
+
+    def _iteration_from_row(self, row) -> Dict:
+        iteration = dict(row)
+        try:
+            iteration['alternatives'] = json.loads(
+                iteration.pop('alternatives_json') or '[]'
+            )
+        except (ValueError, TypeError):
+            iteration.pop('alternatives_json', None)
+            iteration['alternatives'] = []
+        iteration['edited'] = bool(iteration['edited'])
+        return iteration
 
     def store_or_update_poem_entry(
         self,
@@ -339,12 +566,30 @@ class DatabaseManager:
         """
         query = """
         SELECT id, title, source_language, source_language_code, target_language,
-               target_language_code, raw_text, final_translation, created_at
+               target_language_code, raw_text, final_translation, active, created_at
         FROM poems
         ORDER BY id DESC
         """
         self.cursor.execute(query)
-        return [dict(row) for row in self.cursor.fetchall()]
+        return [self._poem_from_row(row) for row in self.cursor.fetchall()]
+
+    def retrieve_active_poem_entries(self) -> List[Dict]:
+        """
+        The poems the installation is allowed to put on the wall
+
+        A poem is taken out of the rotation by turning it off rather than by
+        deleting it, so the record of how it was translated survives being
+        retired from the wall.
+        """
+        query = """
+        SELECT id, title, source_language, source_language_code, target_language,
+               target_language_code, raw_text, final_translation, active, created_at
+        FROM poems
+        WHERE active = 1
+        ORDER BY id DESC
+        """
+        self.cursor.execute(query)
+        return [self._poem_from_row(row) for row in self.cursor.fetchall()]
 
     def retrieve_poem_entry_by_id(self, poem_id: int) -> Optional[Dict]:
         """
@@ -358,13 +603,49 @@ class DatabaseManager:
         """
         query = """
         SELECT id, title, source_language, source_language_code, target_language,
-               target_language_code, raw_text, final_translation, created_at
+               target_language_code, raw_text, final_translation, active, created_at
         FROM poems
         WHERE id = ?
         """
         self.cursor.execute(query, (poem_id,))
         row = self.cursor.fetchone()
-        return dict(row) if row else None
+        return self._poem_from_row(row) if row else None
+
+    def set_poem_active(self, poem_id: int, active: bool) -> Optional[Dict]:
+        """
+        Put a poem into the rotation or take it out
+
+        Returns:
+            The poem as it now stands, or None if no poem has that ID
+        """
+        self.cursor.execute(
+            "UPDATE poems SET active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (1 if active else 0, poem_id)
+        )
+        self.commit_database_changes()
+        return self.retrieve_poem_entry_by_id(poem_id)
+
+    def delete_poem_entry(self, poem_id: int) -> bool:
+        """
+        Remove a poem and everything recorded about it
+
+        The readings go with it, by way of the cascade declared on
+        poem_iterations. This is the destructive option; turning a poem off
+        is the one that keeps its record.
+
+        Returns:
+            True if a poem was removed
+        """
+        self.cursor.execute("DELETE FROM poems WHERE id = ?", (poem_id,))
+        removed = self.cursor.rowcount > 0
+        self.commit_database_changes()
+        return removed
+
+    def _poem_from_row(self, row) -> Dict:
+        poem = dict(row)
+        if 'active' in poem:
+            poem['active'] = bool(poem['active'])
+        return poem
 
     def commit_database_changes(self) -> None:
         """Commit all pending database changes"""
