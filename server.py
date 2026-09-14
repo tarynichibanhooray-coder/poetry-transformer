@@ -37,6 +37,10 @@ engine = PoemTransformerEngine()
 sequence_index = 1
 # The poem currently on screen, so "next" knows what it is following.
 current_poem_id = None
+# Last presentation event. The wall polls /state for this so a trigger from
+# the sensor or another device still updates the screen.
+last_client_event = None
+event_id = 0
 
 # The order poems come up in. Shuffled, and every poem in the rotation is
 # shown once before any of them comes round again.
@@ -103,7 +107,7 @@ def _make_poem_live(stored_poem: Dict, record_event: bool = True) -> Dict:
     }
     if record_event:
         _append_event_to_jsonl(event)
-    return event
+    return _publish_event(event)
 
 
 def _ensure_opening_poem() -> None:
@@ -203,16 +207,25 @@ def _append_event_to_jsonl(event: dict) -> None:
         print(f"✗ Failed to write event to JSONL: {error}")
 
 
-_ensure_opening_poem()
-
-
-def _event_for_clients(event: dict) -> dict:
-    """Attach the last model exchange for the temporary debug panel."""
+def _publish_event(event: dict) -> dict:
+    """Remember the latest presentation so every open wall can poll it."""
+    global last_client_event, event_id
     payload = dict(event)
     getter = getattr(engine, "get_last_debug_exchange", None)
     if callable(getter):
         payload["debug"] = getter()
+    event_id += 1
+    payload["event_id"] = event_id
+    last_client_event = payload
     return payload
+
+
+_ensure_opening_poem()
+
+
+def _event_for_clients(event: dict) -> dict:
+    """Attach debug info and publish the event for the live wall."""
+    return _publish_event(event)
 
 
 async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_state: str):
@@ -751,6 +764,8 @@ async def load_poem(payload: LoadPoemRequest):
 
 @app.get("/state")
 async def state():
+    if last_client_event is not None:
+        return last_client_event
     event = {
         "sequence_index": sequence_index,
         "timestamp": None,
@@ -770,7 +785,7 @@ async def state():
         "stats": engine.get_transformation_statistics(),
         **_current_language_pair()
     }
-    return _event_for_clients(event)
+    return _publish_event(event)
 
 
 # Registered last on purpose: a mount at "/" matches every path and every scope
