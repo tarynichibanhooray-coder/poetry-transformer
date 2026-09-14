@@ -197,10 +197,11 @@ class StageTwoPayloadTests(unittest.TestCase):
             self.assertLessEqual(end - start, 4)
 
     def test_the_phrase_prompt_asks_for_movement(self):
-        self.assertIn("Move the words", PHRASE_PROMPT)
-        self.assertIn("is the rose", PHRASE_PROMPT)
-        self.assertIn("Return this scrap alone", PHRASE_PROMPT)
-        self.assertIn("has to survive", PHRASE_PROMPT)
+        self.assertIn("poetry teacher and a translator", PHRASE_PROMPT)
+        self.assertIn("two or three words at a time", PHRASE_PROMPT)
+        self.assertIn("Reorder, combine, invert a question, fix a wrong sense", PHRASE_PROMPT)
+        self.assertIn("Do not decorate", PHRASE_PROMPT)
+        self.assertIn("You can change the words", PHRASE_PROMPT)
 
     def test_a_scrap_may_not_quietly_lose_a_noun(self):
         engine = make_engine()

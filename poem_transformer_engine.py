@@ -523,11 +523,17 @@ class PoemTransformerEngine:
         current_reading = self.poem.text_for_span(start, end)
 
         try:
+            source_poem = '\n'.join(
+                self.poem.source_line(index)
+                for index in range(len(self.poem.line_spans()))
+            )
             response = self.ai_translator.request_phrase_translation(
                 scrap_source,
                 source_line=self.poem.source_line(line_index),
                 current_reading=current_reading,
                 previous_state=self.span_states.get((start, end)),
+                poem=source_poem,
+                current_state=self.get_current_transformation_state(),
             )
         except Exception as error:
             print(f"✗ Phrase stage failed on {scrap_source!r}: {error}")

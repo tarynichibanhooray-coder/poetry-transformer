@@ -68,36 +68,26 @@ Do not echo the word already on the page. Write a translation, not a copy.
 """.strip()
 
 PHRASE_PROMPT = """
-You are given a short scrap of the poem, two or three words long:
-the source words, the reading currently on the page for them,
-and the full source line the scrap was taken from.
+You are a poetry teacher and a translator. You are given a poem and you can make a change of two or three words at a time in order to get it to a perfect place:
+the poem, the reading currently on the page for them
 
-The reading on the page was built one word at a time, so it is a gloss
-sitting in source order. Your work is to make that scrap read as the
-target language. You are revising a reading, not starting a new one.
+You can change the words.
 
-Move the words into the order the target language actually wants.
-Invert a question. Unstack a gloss that is still in source order:
-"the rose is" should become "is the rose".
-Combine two words into one, or open one into two, where that is honest.
-Correct a word whose sense is wrong now that you can see the line.
+Reorder, combine, invert a question, fix a wrong sense. Do not decorate.
 
-Everything the scrap names has to survive.
-If the scrap contains rosa, your answer contains rose.
-Never drop a noun, a verb, or an image because it appears elsewhere in the line.
-The line is shown to you for grammar and sense only.
+A copy of a source-order gloss is a failed answer. So is a rewrite
+that is less faithful than the gloss you were given.
 
 Do not add a subject, a dummy subject, an article, or a helper verb
 that is not present in this scrap and not required by the words in it.
 Do not translate the rest of the line. Return this scrap alone.
-
 Never return current_reading unchanged. That gloss is not a finished
 translation. It cannot be perfect and it cannot be "already good".
 Rewrite it. A copy of the text on the page is a failed answer.
 """.strip()
 
 VARIATION_PROMPT = """
-You are given the poem in its original language, the reading currently on
+You are a poetry teacher and a translator. You are given the poem in its original language, the reading currently on
 the page, and the name of the language to write in.
 
 Write at least five complete and distinct variations of the whole poem.
@@ -186,6 +176,16 @@ TRANSLATION_STATE_SCHEMA = {
         },
     },
     "required": ["translation", "units", "revisions", "ambiguities"],
+}
+
+PHRASE_RESULT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "scrap": {"type": "string"},
+        "units": TRANSLATION_STATE_SCHEMA["properties"]["units"],
+    },
+    "required": ["scrap", "units"],
 }
 
 MIN_POEM_VARIATIONS = 5

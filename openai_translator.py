@@ -17,6 +17,7 @@ from translation_prompts import (
     GLOBAL_TRANSLATION_INSTRUCTIONS,
     MIN_POEM_VARIATIONS,
     PHRASE_PROMPT,
+    PHRASE_RESULT_SCHEMA,
     POEM_VARIATIONS_SCHEMA,
     TRANSLATION_STATE_SCHEMA,
     VARIATION_PROMPT,
@@ -109,9 +110,11 @@ class OpenAITranslator:
         source_line: str = None,
         current_reading: str = None,
         previous_state: Optional[Dict] = None,
+        poem: str = None,
+        current_state: str = None,
         **_ignored
     ) -> Dict:
-        """Stage 2. A short scrap, with its own line visible as sense context."""
+        """Stage 2. The poem and the current page, two or three words to change."""
         state = self.request_translation_state(
             PHRASE_PROMPT,
             self.restricted_payload(
@@ -119,11 +122,16 @@ class OpenAITranslator:
                 scrap_source,
                 previous_state,
                 extras={
+                    "poem": poem or "",
+                    "current_state": current_state or "",
                     "current_reading": current_reading or "",
                     "source_line": source_line or scrap_source,
                 },
             ),
+            schema=PHRASE_RESULT_SCHEMA,
+            schema_name="phrase_result",
         )
+        state["translation"] = str(state.get("scrap") or "").strip()
         response = self.block_response_from_state(state, [current_reading or scrap_source])
         self.tag_last_exchange(kind="phrase")
         return response
