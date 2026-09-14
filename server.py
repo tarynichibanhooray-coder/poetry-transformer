@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -12,6 +13,7 @@ import config
 
 from poem_rotation import PoemDeck
 from poem_transformer_engine import PoemTransformerEngine, TransformationPhase
+from translation_units import normalize_reading
 
 
 config.validate_required_settings()
@@ -37,8 +39,8 @@ engine = PoemTransformerEngine()
 sequence_index = 1
 # The poem currently on screen, so "next" knows what it is following.
 current_poem_id = None
-# Last presentation event. The wall polls /state for this so a trigger from
-# the sensor or another device still updates the screen.
+# Last presentation event. Open walls receive it on /events; /state is the
+# one-time load for a page that just opened.
 last_client_event = None
 event_id = 0
 _event_listeners: List[asyncio.Queue] = []
@@ -49,6 +51,10 @@ poem_deck = PoemDeck()
 
 # Lock to serialize synonym cycles so they don't overlap
 _cycle_lock = asyncio.Lock()
+SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "2.4"))
+LOG_INTERMEDIATE_SYNONYMS = os.environ.get(
+    "LOG_INTERMEDIATE_SYNONYMS", "false"
+).lower() in ("1", "true", "yes")
 
 OPENING_POEM = {
     "title": "Libro de las preguntas",
@@ -235,21 +241,19 @@ def _event_for_clients(event: dict) -> dict:
 
 
 async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_state: str):
-    """Translate one word and return only its settled presentation."""
+    """One trigger: show every sense of this word, then settle on the primary.
+
+    Each synonym is published as an intermediate so every open wall can play
+    the cycle. Only the settled reading is stored as the trigger's result.
+    """
     global sequence_index
 
-    # Validate index
     if word_index < 0 or word_index >= len(engine.original_poem_words):
-        # Nothing to do — out of range
-        return
+        return None
 
-    # The phase this change belongs to. Settling the last word moves the engine
-    # on to Phase 2, so reading it afterwards would mislabel the event.
     acting_phase = engine.get_current_phase().name
-
     original_word = engine.original_poem_words[word_index]
 
-    # The model call is blocking, so run it off the event loop.
     engine.begin_debug_trigger()
     translation_data = await asyncio.to_thread(
         engine.get_or_fetch_word_translation_with_synonyms,
@@ -257,21 +261,26 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         engine.get_original_line_for_word_index(word_index)
     )
     synonyms_list = translation_data.get('synonyms') or []
-    primary = translation_data.get('target_word') or translation_data.get('primary_translation') or (synonyms_list[0] if synonyms_list else original_word)
+    primary = (
+        translation_data.get('target_word')
+        or translation_data.get('primary_translation')
+        or (synonyms_list[0] if synonyms_list else original_word)
+    )
 
-    # Deduplicate while preserving order
     seen = set()
     dedup_synonyms = []
-    for s in synonyms_list:
-        if s not in seen:
-            dedup_synonyms.append(s)
-            seen.add(s)
-    # If no synonyms, just set primary and finish
+    for synonym in synonyms_list:
+        text = (synonym or '').strip()
+        key = normalize_reading(text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        dedup_synonyms.append(text)
+
     if not dedup_synonyms:
         engine.replace_word_in_transformation_state(word_index, primary)
         engine.word_synonym_cycle_index[word_index] = 0
         engine.note_phase_1_word_completed()
-
         event = {
             "sequence_index": seq_idx_start,
             "timestamp": None,
@@ -293,23 +302,46 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         sequence_index += 1
         return _event_for_clients(event)
 
-    # HTTP returns one response per trigger, so only the settled choice is
-    # presented; the alternatives remain attached to that response.
-    final_choice = primary
+    current = engine.current_words[word_index]
+    for synonym in dedup_synonyms:
+        if normalize_reading(synonym) == normalize_reading(current):
+            continue
+        current = synonym
+        inter_event = {
+            "sequence_index": None,
+            "timestamp": None,
+            "unit_level": "poem",
+            "unit_path": None,
+            "previous_state": prev_state,
+            **_render_snapshot(engine.preview_word_slots(word_index, synonym)),
+            "reason": "synonym_cycle",
+            "confidence": 0.0,
+            "alternatives": dedup_synonyms,
+            "intermediate": True,
+            "triggered_by_context": False,
+            "context_snapshot": {
+                "word_index": word_index,
+                "phase": acting_phase,
+                "phase_after": acting_phase,
+            }
+        }
+        _publish_event(inter_event)
+        if LOG_INTERMEDIATE_SYNONYMS:
+            logged = dict(inter_event)
+            logged['sequence_index'] = sequence_index
+            _append_event_to_jsonl(logged)
+            sequence_index += 1
+        await asyncio.sleep(SYNONYM_CYCLE_INTERVAL)
 
-    engine.replace_word_in_transformation_state(word_index, final_choice)
-
-    # Update cycle index for word (set to index of final in synonyms if present)
+    engine.replace_word_in_transformation_state(word_index, primary)
     try:
-        idx = dedup_synonyms.index(final_choice)
+        idx = dedup_synonyms.index(primary)
         engine.word_synonym_cycle_index[word_index] = (idx + 1) % max(1, len(dedup_synonyms))
     except ValueError:
-        # Not found in dedup list
         engine.word_synonym_cycle_index[word_index] = 0
 
     engine.note_phase_1_word_completed()
 
-    # Final event returned directly to the requesting browser.
     event = {
         "sequence_index": seq_idx_start,
         "timestamp": None,
@@ -327,7 +359,6 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
             "phase_after": engine.get_current_phase().name,
         }
     }
-
     _append_event_to_jsonl(event)
     sequence_index += 1
     return _event_for_clients(event)
@@ -424,11 +455,11 @@ def _change_to_next_poem() -> Optional[Dict]:
 async def trigger():
     """Advance the transformation by one trigger and return the change.
 
-    In Phase 1 a trigger shows the next sense of a word, cycling its synonyms
-    on the wall before leaving that word. After that a trigger rewrites one block,
-    gathering toward the target. Once the target is on the page, the next
-    triggers run that same word-then-gather process back toward the original
-    language.
+    In Phase 1 a trigger takes one word and cycles every synonym through
+    that slot on the wall, then settles on the primary. After that a trigger
+    rewrites one block, gathering toward the target. Once the target is on
+    the page, the next triggers run that same word-then-gather process back
+    toward the original language.
 
     Once a poem has finished its whole journey, the next trigger changes the
     poem instead of translating: the sensor is the only thing driving an
@@ -450,6 +481,12 @@ async def trigger():
                 return event
 
             prev_state = engine.get_current_transformation_state()
+            if engine.get_current_phase() == TransformationPhase.WORDS:
+                word_index = engine.claim_next_phase_1_word_index()
+                if word_index is not None:
+                    return await _run_synonym_cycle_for_word(
+                        word_index, sequence_index, prev_state
+                    )
             return await _run_block_trigger(sequence_index, prev_state)
     except HTTPException:
         raise
