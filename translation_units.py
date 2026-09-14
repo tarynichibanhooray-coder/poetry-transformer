@@ -271,11 +271,11 @@ class UnitPoem:
     # ---------------------------------------------------------------- place
 
     def place_span(self, start: int, end: int, segments: List[str]) -> None:
-        """Write a rewrite across a span, using the model's own segmentation.
+        """Write a rewrite across a span.
 
-        One segment per unit keeps the units the page is already showing.
-        Fewer segments than units means the model joined them, so the extra
-        units are emptied rather than left holding a stale duplicate.
+        One scrap for several units is a combine: the first unit holds the
+        joined reading and the extras are emptied. More segments than units
+        are folded into the last slot so nothing is dropped.
         """
         span_units = self.units[start:end]
         if not span_units:
@@ -286,9 +286,7 @@ class UnitPoem:
         if not segments:
             return
 
-        if len(segments) == 1 and len(span_units) > 1:
-            segments = distribute_words(segments[0].split(), len(span_units))
-        elif len(segments) > len(span_units):
+        if len(segments) > len(span_units):
             head = segments[:len(span_units) - 1]
             tail = ' '.join(segments[len(span_units) - 1:])
             segments = head + [tail]

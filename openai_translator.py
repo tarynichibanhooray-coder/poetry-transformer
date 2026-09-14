@@ -133,6 +133,8 @@ class OpenAITranslator:
         )
         state["translation"] = str(state.get("scrap") or "").strip()
         response = self.block_response_from_state(state, [current_reading or scrap_source])
+        if state["translation"]:
+            response["segments"] = [state["translation"]]
         self.tag_last_exchange(kind="phrase")
         return response
 
