@@ -61,7 +61,9 @@ Troubleshooting
 
 Log files & runtime files
 - pi_trigger_gpio.py writes no files except `pi_queue.jsonl` (in the repo directory) when queued triggers exist.
-- The server writes events to output/translation_stream.jsonl — check this file to confirm the server processed triggers.
+- The server appends presentation events to
+  `output/translation_stream.jsonl`. Check the HTTP response or service
+  journal for trigger failures.
 
 Updating the unit file safely
 - Use systemctl edit --full to avoid losing manual local edits when pulling upstream changes.

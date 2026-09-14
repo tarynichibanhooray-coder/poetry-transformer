@@ -88,6 +88,9 @@ POEM_FILE_PATH = BASE_DIR / "poem.txt"
 DATABASE_FILE_PATH = BASE_DIR / "poetry_transformer.db"
 DATABASE_ENABLE_LOGGING = False  # Set to True for debugging
 
+# Preserve every future API result and its supporting history.
+PERSIST_GENERATED_OUTPUT = True
+
 # Output database for detailed translation events (same DB used by manager)
 # ============================================================================
 
@@ -115,10 +118,10 @@ MAX_SYNONYMS_PER_WORD = 7
 # Output modes: "console", "file", "custom"
 DISPLAY_OUTPUT_MODE = "console"
 
-# File path for file output mode
+# Optional legacy file renderer.
 DISPLAY_OUTPUT_FILE_PATH = BASE_DIR / "output" / "transformed_poem.txt"
 
-# Streaming JSONL output for animation / installation
+# Translation presentation-event history.
 STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
 
 # ============================================================================
@@ -136,15 +139,8 @@ BLOCK_GROWTH_WORD_SIZES = [2, 3]
 # others, where a single accurate reading is what is wanted.
 VARIATION_TEMPERATURE = 0.95
 
-# Every pass over a block is asked to improve how the poem currently reads,
-# not to translate the source afresh, so its answer depends on the state of the
-# poem at that moment. A cached answer would be an answer to a different
-# question, which is why the phrase cache is off. Turning it on trades honesty
-# for a lower bill.
+# API caches remain opt-in because translation choices depend on live context.
 CACHE_BLOCK_TRANSLATIONS = False
-
-# Word lookups are just as state-sensitive: a cached "it's" for "es" will keep
-# coming back. Fresh calls keep the page from repeating a bad saved rendering.
 CACHE_WORD_TRANSLATIONS = False
 
 # Set to an integer to replay the same random order every run, which is useful

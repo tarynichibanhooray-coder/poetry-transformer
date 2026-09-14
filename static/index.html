@@ -86,28 +86,6 @@
       transition: opacity 0.9s ease, color 0.7s ease;
     }
 
-    #next-poem {
-      position: fixed;
-      right: 1.25rem;
-      bottom: 1.25rem;
-      width: 2.75rem;
-      height: 2.75rem;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      color: #f4efe6;
-      opacity: 0.28;
-      font: inherit;
-      font-size: 1.75rem;
-      line-height: 1;
-      cursor: pointer;
-    }
-    #next-poem:hover,
-    #next-poem:focus {
-      opacity: 0.7;
-      outline: none;
-    }
-
     #intro {
       position: fixed;
       inset: 0;
@@ -176,7 +154,6 @@
   </div>
 
   <div id="poem"></div>
-  <button id="next-poem" type="button" title="Next poem" aria-label="Next poem">→</button>
 
   <aside id="debug-panel" aria-label="Translation debug">
     <h2>Debug</h2>
@@ -191,7 +168,6 @@
 
   <script>
     const poemEl = document.getElementById('poem');
-    const nextBtn = document.getElementById('next-poem');
     const introEl = document.getElementById('intro');
     const srLive = document.getElementById('sr-live');
     const debugStage = document.getElementById('debug-stage');
@@ -207,13 +183,10 @@
       '#c2410c', '#155e75', '#7c2d12', '#4c1d95'
     ];
 
-    const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
-    let ws = null;
-    let reconnectTimer = null;
-
     let poemColor = POEM_COLORS[0];
     let play = Promise.resolve();
     let introOpen = true;
+    let triggerInFlight = false;
 
     function escapeHtml(s) {
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -645,32 +618,38 @@
       introEl.hidden = true;
     }
 
-    function connectWebSocket() {
-      clearTimeout(reconnectTimer);
-      ws = new WebSocket(wsProto + '://' + location.host + '/ws');
-
-      ws.onmessage = (evt) => {
-        try {
-          const event = JSON.parse(evt.data);
-          if (event && event.debug) showDebug(event.debug);
-          if (event) enqueue(event);
-        } catch (err) {
-          console.error('Invalid event', err);
-        }
-      };
-
-      ws.onclose = () => {
-        reconnectTimer = setTimeout(connectWebSocket, 1000);
-      };
+    async function loadState() {
+      try {
+        const response = await fetch(base + '/state');
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        const event = await response.json();
+        if (event.debug) showDebug(event.debug);
+        enqueue(event);
+      } catch (err) {
+        console.error('Initial state failed', err);
+      }
     }
 
-    connectWebSocket();
-
     async function sendTrigger() {
+      if (triggerInFlight) return;
+      triggerInFlight = true;
       try {
-        await fetch(base + '/trigger', { method: 'POST' });
+        const response = await fetch(base + '/trigger', { method: 'POST' });
+        if (!response.ok) {
+          let detail = `${response.status} ${response.statusText}`;
+          try {
+            const body = await response.json();
+            if (body.detail) detail = body.detail;
+          } catch (ignored) {}
+          throw new Error(detail);
+        }
+        const event = await response.json();
+        if (event.debug) showDebug(event.debug);
+        enqueue(event);
       } catch (err) {
         console.error('Trigger failed', err);
+      } finally {
+        triggerInFlight = false;
       }
     }
 
@@ -686,15 +665,7 @@
     });
 
     introEl.addEventListener('click', dismissIntro);
-
-    nextBtn.addEventListener('click', async () => {
-      dismissIntro();
-      try {
-        await fetch(base + '/next_poem', { method: 'POST' });
-      } catch (err) {
-        console.error('Next poem failed', err);
-      }
-    });
+    loadState();
   </script>
 </body>
 </html>

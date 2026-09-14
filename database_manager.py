@@ -1,7 +1,4 @@
-"""
-Database Manager for Poetry Transformer
-Handles all SQLite operations for caching translations and synonyms
-"""
+"""SQLite storage for authored poems and their metadata."""
 
 import sqlite3
 from pathlib import Path
@@ -67,11 +64,10 @@ class DatabaseManager:
             raise
 
     def create_all_required_tables(self) -> None:
-        """Create all necessary tables for the application"""
+        """Create all persistence tables used by the application."""
         self.create_word_cache_table()
         self.create_phrase_cache_table()
         self.create_translation_history_table()
-        # Create poems table for persisted poem management (added here to ensure schema exists)
         self.create_poems_table()
         self.create_poem_iterations_table()
         self.commit_database_changes()
@@ -280,24 +276,17 @@ class DatabaseManager:
 
     def create_poem_iterations_table(self) -> None:
         """
-        Create the table that keeps every reading a poem has been given
-
-        The stream in output/ is a log of a performance and is thrown away
-        between runs. This table is the poem's own record: one row for every
-        reading the model returned for it, and every reading typed by hand
-        afterwards, so a poem can be read back and corrected later.
+        Create the table for saved API and hand-authored stage readings
 
         Columns:
             poem_id: The poem the reading belongs to
             stage: 'words', 'phrases' or 'lines'
             journey: 'out' on the way to the target, 'home' coming back
-            position: Order within the stage, in the order they arrived
-            source_text: What was sent to be translated
-            content: The reading that came back
-            note: What the stage said it was doing, or what a variation holds
-            alternatives_json: The other senses offered alongside the reading
-            origin: 'api' for a model answer, 'hand' for one typed in
-            edited: Whether a model answer has since been changed by hand
+            position: Order within the stage
+            source_text: Source submitted to the model or entered in the editor
+            content: Saved API result or authored reading
+            note: Stage/model context or optional authored note
+            origin: 'api' for model output or 'hand' for an authored reading
         """
         create_table_sql = """
         CREATE TABLE IF NOT EXISTS poem_iterations (
@@ -334,16 +323,7 @@ class DatabaseManager:
         journey: str = 'out',
         origin: str = 'api'
     ) -> Optional[int]:
-        """
-        Add one reading to a poem's record
-
-        A poem the engine was handed directly, with no library row behind it,
-        has nothing to attach readings to. That is a normal way to run the
-        engine in a test, so it is not an error; the reading is dropped.
-
-        Returns:
-            ID of the stored reading, or None if there was no poem to file it under
-        """
+        """Store an API result or explicitly hand-authored reading."""
         if not poem_id:
             return None
 
@@ -413,22 +393,13 @@ class DatabaseManager:
         note: str = None,
         source_text: str = None
     ) -> Optional[Dict]:
-        """
-        Change a recorded reading
-
-        A model answer that has been corrected is marked as edited rather
-        than relabelled as handwritten, so the record still shows that the
-        model answered here and that the answer was not left standing.
-        """
+        """Change a saved API or hand-authored reading."""
         existing = self.retrieve_poem_iteration_by_id(iteration_id)
         if not existing:
             return None
-
         content = existing['content'] if content is None else content.strip()
         if not content:
             return None
-
-        was_edited = existing['edited'] or content != existing['content']
 
         self.cursor.execute(
             """
@@ -441,7 +412,8 @@ class DatabaseManager:
                 content,
                 existing['note'] if note is None else note,
                 existing['source_text'] if source_text is None else source_text,
-                1 if was_edited and existing['origin'] == 'api' else existing['edited'],
+                1 if content != existing['content'] and existing['origin'] == 'api'
+                else existing['edited'],
                 iteration_id,
             )
         )
@@ -611,6 +583,65 @@ class DatabaseManager:
         row = self.cursor.fetchone()
         return self._poem_from_row(row) if row else None
 
+    def update_poem_entry(
+        self,
+        poem_id: int,
+        raw_text: str,
+        source_language: str,
+        source_language_code: str,
+        target_language: str,
+        target_language_code: str,
+        title: str = None,
+        final_translation: str = None,
+        active: bool = True,
+    ) -> Dict:
+        """Update one poem in place while preserving its row identity.
+
+        The add flow deduplicates on source text and language pair, so an edit
+        is rejected if it would collide with another existing poem.
+        """
+        self.cursor.execute(
+            """
+            SELECT id FROM poems
+            WHERE raw_text = ? AND source_language_code = ?
+              AND target_language_code = ? AND id != ?
+            """,
+            (raw_text, source_language_code, target_language_code, poem_id),
+        )
+        duplicate = self.cursor.fetchone()
+        if duplicate:
+            raise ValueError(
+                f"These source contents and languages already belong to poem "
+                f"#{duplicate['id']}"
+            )
+
+        self.cursor.execute(
+            """
+            UPDATE poems
+            SET title = ?, source_language = ?, source_language_code = ?,
+                target_language = ?, target_language_code = ?, raw_text = ?,
+                lines_json = ?, final_translation = ?, active = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (
+                title,
+                source_language,
+                source_language_code,
+                target_language,
+                target_language_code,
+                raw_text,
+                json.dumps(raw_text.split('\n'), ensure_ascii=False),
+                final_translation,
+                1 if active else 0,
+                poem_id,
+            ),
+        )
+        if self.cursor.rowcount == 0:
+            raise KeyError(poem_id)
+        self.commit_database_changes()
+        return self.retrieve_poem_entry_by_id(poem_id)
+
     def set_poem_active(self, poem_id: int, active: bool) -> Optional[Dict]:
         """
         Put a poem into the rotation or take it out
@@ -626,16 +657,7 @@ class DatabaseManager:
         return self.retrieve_poem_entry_by_id(poem_id)
 
     def delete_poem_entry(self, poem_id: int) -> bool:
-        """
-        Remove a poem and everything recorded about it
-
-        The readings go with it, by way of the cascade declared on
-        poem_iterations. This is the destructive option; turning a poem off
-        is the one that keeps its record.
-
-        Returns:
-            True if a poem was removed
-        """
+        """Remove one poem record."""
         self.cursor.execute("DELETE FROM poems WHERE id = ?", (poem_id,))
         removed = self.cursor.rowcount > 0
         self.commit_database_changes()
@@ -687,6 +709,8 @@ class DatabaseManager:
         Returns:
             Dictionary with word data or None if not found
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return None
         query = """
         SELECT id, source_word, target_word, synonyms_json, context_line, created_at
         FROM word_cache
@@ -742,6 +766,8 @@ class DatabaseManager:
         Returns:
             ID of inserted record
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return None
         # Ensure we don't exceed 7 synonyms
         limited_synonyms = synonyms[:config.MAX_SYNONYMS_PER_WORD]
         synonyms_json = json.dumps(limited_synonyms)
@@ -788,6 +814,8 @@ class DatabaseManager:
         Returns:
             Dictionary with phrase data or None if not found
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return None
         query = """
         SELECT id, source_phrase, target_phrase, phrase_word_count, translation_mode, created_at
         FROM phrase_cache
@@ -833,6 +861,8 @@ class DatabaseManager:
         Returns:
             ID of inserted record
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return None
         word_count = len(source_phrase.split())
         
         insert_sql = """
@@ -878,6 +908,8 @@ class DatabaseManager:
         Returns:
             ID of inserted record
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return None
         insert_sql = """
         INSERT INTO translation_history
         (request_type, source_text, target_text, tokens_used, source_language, target_language)
@@ -897,6 +929,8 @@ class DatabaseManager:
         Args:
             word_cache_id: ID of word cache record
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return
         update_sql = """
         UPDATE word_cache
         SET last_accessed_at = CURRENT_TIMESTAMP
@@ -912,6 +946,8 @@ class DatabaseManager:
         Args:
             phrase_cache_id: ID of phrase cache record
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return
         update_sql = """
         UPDATE phrase_cache
         SET last_accessed_at = CURRENT_TIMESTAMP
@@ -927,6 +963,8 @@ class DatabaseManager:
         Returns:
             List of all translation history records
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return []
         query = "SELECT * FROM translation_history ORDER BY timestamp DESC"
         self.cursor.execute(query)
         rows = self.cursor.fetchall()
@@ -939,6 +977,8 @@ class DatabaseManager:
         Returns:
             Number of words in cache
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return 0
         query = "SELECT COUNT(*) as count FROM word_cache"
         self.cursor.execute(query)
         return self.cursor.fetchone()['count']
@@ -950,6 +990,8 @@ class DatabaseManager:
         Returns:
             Number of phrases in cache
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return 0
         query = "SELECT COUNT(*) as count FROM phrase_cache"
         self.cursor.execute(query)
         return self.cursor.fetchone()['count']
@@ -961,6 +1003,8 @@ class DatabaseManager:
         Returns:
             Number of API requests made
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return 0
         query = "SELECT COUNT(*) as count FROM translation_history"
         self.cursor.execute(query)
         return self.cursor.fetchone()['count']
@@ -972,6 +1016,8 @@ class DatabaseManager:
         Returns:
             Sum of all tokens used
         """
+        if not config.PERSIST_GENERATED_OUTPUT:
+            return 0
         query = "SELECT COALESCE(SUM(tokens_used), 0) as total FROM translation_history"
         self.cursor.execute(query)
         return self.cursor.fetchone()['total']

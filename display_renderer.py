@@ -70,29 +70,18 @@ class DisplayRenderer:
         print()
 
     def render_poem_to_file_output(self, poem_text: str, metadata: dict = None) -> None:
-        """
-        Render poem to text file
-        
-        Args:
-            poem_text: The poem text to write
-            metadata: Optional metadata to include
-        """
+        """Render the transformed poem to the configured text file."""
         try:
-            # Ensure output directory exists
             self.output_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
             with open(self.output_file_path, 'w', encoding='utf-8') as file:
                 file.write("TRANSFORMED POEM\n")
                 file.write("="*80 + "\n\n")
                 file.write(poem_text)
                 file.write("\n\n" + "="*80 + "\n")
-                
                 if metadata:
                     file.write(self.format_metadata_as_text(metadata))
-            
             if config.DEBUG_MODE:
                 print(f"✓ Poem rendered to file: {self.output_file_path}")
-                
         except IOError as error:
             print(f"✗ Failed to write to file: {error}")
 

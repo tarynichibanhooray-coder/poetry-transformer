@@ -24,18 +24,15 @@ Expected: JSON with keys "current_state" and "stats".
 Save results:
   curl -s http://<server-host>:8000/state > test-results/state.json
 
-2) Confirm web UI connects
+2) Confirm web UI loads
 - Open http://<server-host>:8000/ in a browser.
-- In DevTools Console, ensure WebSocket connects and no errors.
+- Confirm the initial poem appears from the ordinary HTTP state request.
 
 3) Trigger with web UI (Space)
 - Press Space.
-- Check server-side event append:
-  tail -n 5 output/translation_stream.jsonl
-
-Expected: New JSON event with "reason": "trigger" and a new sequence_index.
-Save tail:
-  tail -n 20 output/translation_stream.jsonl > test-results/translation_stream_tail.jsonl
+- Confirm one completed action appears. The completed presentation event is
+  returned to that HTTP request and appended to
+  `output/translation_stream.jsonl`.
 
 4) Trigger with Pi button (GPIO)
 - Press the physical button wired to the Pi.
@@ -66,9 +63,8 @@ Save sample:
   sudo journalctl -u pi-trigger-gpio -f
 
 Expected: queued items flushed (see "Flushed queued trigger" in Pi logs) and pi_queue.jsonl removed or reduced.
-Save server logs and stream:
+Save server logs:
   sudo journalctl -u poetry-transformer -n 200 > test-results/server_journal.log
-  tail -n 50 output/translation_stream.jsonl > test-results/translation_stream_after_restore.jsonl
 
 7) Rate-limit verification
 - Rapidly POST to exceed rate limit (defaults: 5 requests / 10s):
@@ -81,7 +77,6 @@ Expected: some 429 http codes when the limit is exceeded.
 
   mkdir -p test-results
   curl -s http://<server-host>:8000/state > test-results/state.json
-  tail -n 50 output/translation_stream.jsonl > test-results/translation_stream.jsonl
   sudo journalctl -u poetry-transformer -n 500 > test-results/server_journal.log
   sudo journalctl -u pi-trigger-gpio -n 500 > test-results/pi_journal.log
   if [ -f pi_queue.jsonl ]; then wc -l pi_queue.jsonl > test-results/queue_count.txt; head -n 200 pi_queue.jsonl > test-results/queue_sample.jsonl; fi
@@ -91,11 +86,11 @@ Expected: some 429 http codes when the limit is exceeded.
 What to provide back to me for diagnosis
 - test-results/server_journal.log
 - test-results/pi_journal.log
-- test-results/translation_stream.jsonl
 - test-results/queue_sample.jsonl (if present)
 - Outputs of: sudo systemctl status pi-trigger-gpio && sudo systemctl status poetry-transformer
 
 What I will do with the results
-- I will analyze the logs and JSONL events and report exactly which steps passed/failed and why, and provide concrete fixes or code changes to resolve any issues.
+- I will analyze the logs and HTTP state and report exactly which steps
+  passed/failed and why, and provide concrete fixes.
 
 If you want a single script that runs the artifact collection and packages a tarball, reply "Produce test-results script" and I will add it to the repo.

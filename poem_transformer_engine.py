@@ -70,8 +70,8 @@ class PoemTransformerEngine:
         )
 
         self.poem = UnitPoem([])
-        # The library row the readings are filed under. None when the engine
-        # was handed a poem directly, which is normal in a test.
+        # The library row currently shown. Generated readings remain in memory
+        # and are never filed under it.
         self.poem_id = None
         self.original_poem = None
         self.home_poem = None
@@ -331,12 +331,7 @@ class PoemTransformerEngine:
         note: str = '',
         alternatives: List[str] = None,
     ) -> None:
-        """File one reading under the poem it belongs to.
-
-        Kept out of the way of the stages themselves: a failure to write the
-        record must never take down the pass that produced it, because the
-        poem on the wall matters more than the notebook about it.
-        """
+        """Persist one API result under the currently loaded poem."""
         if not self.poem_id:
             return
         try:
@@ -348,6 +343,7 @@ class PoemTransformerEngine:
                 note=note,
                 alternatives=alternatives,
                 journey='home' if self.on_return_journey else 'out',
+                origin='api',
             )
         except Exception as error:
             print(f"✗ Could not record a {stage} reading: {error}")
@@ -398,7 +394,7 @@ class PoemTransformerEngine:
                 self.source_language_code,
                 self.target_language_code,
                 context_line or '',
-                self.final_translation or ''
+                self.final_translation or '',
             )
 
         if cached:
@@ -429,7 +425,7 @@ class PoemTransformerEngine:
                 self.source_language_code,
                 self.target_language_code,
                 context_line or '',
-                self.final_translation or ''
+                self.final_translation or '',
             )
 
         self.database_manager.record_translation_history_entry(
@@ -438,7 +434,7 @@ class PoemTransformerEngine:
             ai_response['primary_translation'],
             self.source_language_code,
             self.target_language_code,
-            ai_response.get('tokens_used')
+            ai_response.get('tokens_used'),
         )
 
         if origin_word:
@@ -576,12 +572,12 @@ class PoemTransformerEngine:
         self.variation_queue = queue
         self.last_block_drafts = [reading for reading, _ in queue]
 
-        # Recorded here rather than as each one is shown, because the whole
-        # ranked field arrived in a single answer and the ones the poem is
-        # about to walk past are as much a part of the record as the last.
         for reading, label in queue:
             self.record_iteration(
-                'lines', reading, source_text=source_poem, note=label
+                'lines',
+                reading,
+                source_text=source_poem,
+                note=label,
             )
 
     def place_poem_reading(self, reading: str) -> None:

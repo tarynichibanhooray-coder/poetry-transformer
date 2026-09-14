@@ -1,78 +1,156 @@
-# Poetry Transformer — Run & Deploy
+# Poetry Transformer
 
-This repository includes a small FastAPI server that runs the PoemTransformer engine, streams transformation events to connected web clients, and provides a minimal web UI that triggers the engine.
+Poetry Transformer displays one poem in a browser and advances its translation
+one action at a time when you press Space. The page uses ordinary HTTP: it
+loads the current poem from `GET /state`, then each `POST /trigger` waits for
+one action and returns the updated poem. After a poem completes its full
+outward-and-return journey, the following trigger selects another active poem.
 
-Files of interest
-- `server.py` — FastAPI server with endpoints:
-  - `POST /trigger` — advance the transformation by one step
-  - `POST /load_poem` — load and save a poem (JSON payload: `{"poem": "text", "title": "optional", "source_language_code": "es"}`)
-  - `GET /state` — current poem state, stats, and active language pair
-  - `GET /languages` — source and target languages the app accepts
-  - `GET /poems` — previously saved poems, newest first
-  - `WebSocket /ws` — real-time event stream (initial state + subsequent events)
-  - Also serves the static UI at `/` from `static/index.html`.
-- `static/index.html` — tiny web UI that connects to `/ws` and POSTs `/trigger` on Space.
-- `static/add.html` — form for adding a poem, with `/`-separated lines and an original-language picker.
-- `pi_trigger.py` — simple Raspberry Pi client that POSTs `/trigger` when Space (or a button) is pressed.
-- `run_local.sh` — single-command local runner (creates venv, installs dependencies, runs uvicorn).
-- `requirements.txt` — Python dependencies. (Updated to include `openai`.)
+## Run locally
 
-Important note
-- The `POST /trigger` handler currently includes a TODO comment where an API key check should be implemented. You can test locally without any API key; enable the key before public deployment.
+1. Open a terminal and enter the project:
 
-Quick start — run locally (recommended)
-1. Run the single command:
+   ```sh
+   cd /Users/taryn/RealDesktop/coding/poetry-transformer
+   ```
 
+2. Create or edit `.env` in that directory:
+
+   ```text
+   OPENAI_API_KEY="sk-your-key-here"
+   ```
+
+   You may also set `OPENAI_MODEL`. Do not commit `.env`.
+
+3. Start the app:
+
+   ```sh
    ./run_local.sh
+   ```
 
-   This creates a Python virtual environment (`.venv`), installs dependencies from `requirements.txt`, and starts uvicorn. Override the bind address with `HOST` and `PORT`, e.g. `PORT=8080 ./run_local.sh`.
+   The script creates `.venv` when needed, installs the requirements, and
+   starts the FastAPI server.
 
-   To pull the latest `main` first and then start, use `./update_and_run.sh`, which delegates to `run_local.sh` rather than duplicating the launch logic. Note that it checks out `main`, so don't run it from a feature branch.
+4. Open:
 
-2. Open the UI in your browser:
+   - Live poem: http://localhost:8000/
+   - Add a poem: http://localhost:8000/add.html
+   - Poem library: http://localhost:8000/poems
 
-   http://localhost:8000/
+5. Press Space on the live page to advance exactly one translation action.
+   Press Ctrl-C in the terminal to stop the server.
 
-   - The page will open a WebSocket to `ws://localhost:8000/ws` and show the current poem state.
-   - Press Space (or click the "Trigger" button) to advance the poem. Each trigger is broadcast to all connected clients and appended to `output/translation_stream.jsonl`.
+## Add a poem
 
-Adding poems
-- Open http://localhost:8000/add.html (linked from the live view).
-- Paste the poem using `/` to separate lines and `//` for a blank line between stanzas. Poems pasted with real line breaks work too.
-- Pick the poem's original language. This is stored per poem, feeds the OpenAI prompt, and keys the translation cache, so poems in different languages never share cached words.
-- The list of selectable languages comes from `SUPPORTED_SOURCE_LANGUAGES` in `config.py`, served to the page via `GET /languages`. Add a `{"name": ..., "code": ...}` entry there to offer another language.
-- Poems are saved to the `poems` table. Re-saving the same text and language pair updates the existing row instead of creating a duplicate.
+Open `/add.html`, then:
 
-Environment variables and .env (new)
-- Create a `.env` file at the repository root (do NOT commit it). Use the provided `.env.example` as a starting point.
+1. Enter an optional title.
+2. Choose the language of the original poem.
+3. Enter the original poem.
+4. Optionally enter your own final target-language translation. When supplied,
+   this is the rendering the outward journey ends on.
+5. Use `/` between lines and `//` for a blank line between stanzas. Real line
+   breaks also work.
+6. Select **Load Poem**.
 
-Example `.env`:
+Loading saves the poem and immediately makes it the displayed poem.
 
-```
-OPENAI_API_KEY="sk-REPLACE_WITH_YOUR_KEY"
-OPENAI_MODEL="gpt-4o"
-SERVER_URL="http://localhost:8000"  # optional for pi_trigger
-```
+## Manage the poem library
 
-- `config.py` loads `.env` automatically, so the key is picked up however you start the app — `run_local.sh`, a bare `uvicorn` command, `main.py`, or a test. No launcher script injects it.
-- Real environment variables take precedence over `.env`, so systemd or CI can override it without editing the file.
-- If `OPENAI_API_KEY` is missing, the app fails at startup with a clear message instead of starting and then returning an opaque 401 on the first translation.
-- `.env` is included in `.gitignore` to avoid accidentally committing secrets.
+Open `/poems` to see every saved poem.
 
-API examples (local)
-- Trigger via curl:
+- **In rotation** controls whether the automatic sequence can select the poem.
+  Switching a poem off preserves the poem but skips it during rotation.
+- Open a poem at `/poems/{id}` to edit its title, original language, original
+  text, target language, or chosen final translation. Select **Save poem** to
+  update that same poem record in place. Clear the final-translation field and
+  save to remove the chosen target.
+- The same edit page has Stage 1 words, Stage 2 phrases, and Stage 3 variations
+  sections. Every new model result is recorded there automatically. Model
+  results can be edited or deleted, and readings can also be added by hand.
+- **Show this poem now** immediately replaces the poem on the live page. This
+  does not change whether the poem is in the active rotation.
+- **Delete this poem** permanently removes that poem record. The currently
+  displayed poem cannot be deleted; first use **Show this poem now** on a
+  different poem, then return to the old poem and delete it.
 
-  curl -X POST http://localhost:8000/trigger
+## Edit a poem
 
-- Load a poem:
+1. Open `/poems`.
+2. Select the poem title or **Open**.
+3. Change the title, languages, original poem, or chosen final translation.
+4. Select **Save poem**.
+5. In any stage section, select **Add**, enter its source, authored reading,
+   and optional note, then **Save**. Every saved model or hand-authored record
+   has **Edit** and **Delete** controls.
 
-  curl -X POST http://localhost:8000/load_poem -H "Content-Type: application/json" -d '{"poem":"Two roads diverged in a yellow wood"}'
+The same poem id is retained. If that poem is currently displayed, saving also
+restarts the server's live transformation state from the edited source and
+languages. A live page already open in another tab does not receive push
+updates; reload that page to display the edited starting state. An edit is
+rejected if it would duplicate another poem's exact source text and language
+pair.
 
-- Get current state:
+## What is saved
 
-  curl http://localhost:8000/state
+The SQLite database stores:
 
-Raspberry Pi usage
-- Refer to the original README for Pi deployment and systemd instructions.
+- authored source/start text
+- optional user-authored target/final translation
+- title
+- source and target languages
+- active rotation flag and necessary record metadata
+- every Stage 1 word result, including source word, alternatives, journey,
+  stage order, and notes
+- every Stage 2 phrase result, including its source scrap, journey, stage
+  order, and notes
+- every Stage 3 full-poem variation, including its source poem, journey,
+  stage order, and notes
+- readings explicitly added by a person
+- translation request history and enabled translation caches
 
-If you'd like I can also open a PR with these changes instead of committing directly to main. Reply: "Create WAL PR" to create a PR or "Done" if you want nothing further.
+Presentation events are also appended to `output/translation_stream.jsonl`.
+The previous unwanted data was cleaned once: 37 old stage rows, 38 word-cache
+rows, 10 phrase-cache rows, 728 history rows, and the old JSONL stream were
+deleted while poems 8, 9, and 10 were retained. New API output is recorded from
+that clean point forward.
+
+## HTTP behavior
+
+- `GET /state` returns the current presentation snapshot for initial page load.
+- `POST /trigger` waits for and returns exactly one completed action. Concurrent
+  requests are serialized by the server.
+- `POST /load_poem` saves and displays an authored poem.
+- `GET /languages` lists supported source and target languages.
+- `GET /api/poems` and `GET /api/poems/{id}` return saved poem records.
+- `POST /api/poems/{id}/iterations` adds a hand-authored stage record.
+- `PATCH /api/iterations/{id}` edits a saved model or hand-authored record.
+- `DELETE /api/iterations/{id}` deletes a saved model or hand-authored record.
+- `PATCH /api/poems/{id}` edits authored poem fields and/or the active flag in
+  place. When the poem is live, the response also includes its reset
+  presentation event.
+- `POST /api/poems/{id}/live` displays that saved poem immediately.
+- `DELETE /api/poems/{id}` deletes a non-displayed poem.
+
+## Deploy on Render
+
+Create a Python web service with:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn server:app --host 0.0.0.0 --port $PORT`
+- Environment variable: `OPENAI_API_KEY`
+
+You may also set `OPENAI_MODEL`. Do not set `SERVER_URL` on the web service;
+the browser uses same-origin HTTP requests. `SERVER_URL` is only for an
+external Raspberry Pi trigger client and should point that client at the
+deployed service.
+
+Render web-service filesystems are ephemeral. This project currently uses a
+local SQLite database, so poem records will not survive deploy replacement,
+restart, or spin-down unless persistent database storage is added.
+
+## Raspberry Pi trigger
+
+`pi_trigger.py` and `pi_trigger_gpio.py` send ordinary `POST /trigger`
+requests. Set `SERVER_URL` in the external Pi process to the app URL. The web
+service itself does not need that variable.
