@@ -638,11 +638,11 @@
       lastEventId = event.event_id != null ? event.event_id : lastEventId;
       if (event.error) {
         wallError.textContent = event.error;
-        return;
+        if (event.new_state === undefined && !Array.isArray(event.words)) return;
       }
       if (event.debug) showDebug(event.debug);
       if (event.new_state === undefined && !Array.isArray(event.words)) return;
-      wallError.textContent = '';
+      if (!event.error) wallError.textContent = '';
       enqueue(event);
     }
 
@@ -690,16 +690,31 @@
 
     window.addEventListener('keydown', handleTriggerInput);
     window.addEventListener('pointerup', handleTriggerInput);
-    loadState();
 
-    const triggerStream = new EventSource(base + '/events');
-    triggerStream.onmessage = (message) => {
-      try {
-        applyEvent(JSON.parse(message.data));
-      } catch (err) {
-        console.error(err);
-      }
-    };
+    function connectTriggerStream() {
+      const triggerStream = new EventSource(base + '/events');
+      let resync = null;
+      triggerStream.onmessage = (message) => {
+        try {
+          applyEvent(JSON.parse(message.data));
+        } catch (err) {
+          console.error(err);
+        }
+      };
+      triggerStream.onopen = () => {
+        if (!poemEl.childNodes.length) loadState();
+      };
+      triggerStream.onerror = () => {
+        if (resync) return;
+        resync = setTimeout(() => {
+          resync = null;
+          loadState();
+        }, 500);
+      };
+    }
+
+    loadState();
+    connectTriggerStream();
   </script>
 </body>
 </html>

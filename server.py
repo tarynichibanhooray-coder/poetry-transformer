@@ -223,8 +223,17 @@ def _append_event_to_jsonl(event: dict) -> None:
         print(f"✗ Failed to write event to JSONL: {error}")
 
 
-def _publish_event(event: dict) -> dict:
-    """Remember the latest presentation so every open wall can poll it."""
+def _is_presentation(event: dict) -> bool:
+    """True when the payload can paint the poem, not only report an error."""
+    return event.get("new_state") is not None or isinstance(event.get("words"), list)
+
+
+def _publish_event(event: dict, *, remember: bool = True) -> dict:
+    """Push a presentation to every open /events listener.
+
+    /state is the one-time load for a page that just opened. It must keep
+    the last payload that can draw the poem. Errors go to open walls only.
+    """
     global last_client_event, event_id
     payload = dict(event)
     getter = getattr(engine, "get_last_debug_exchange", None)
@@ -232,13 +241,19 @@ def _publish_event(event: dict) -> dict:
         payload["debug"] = getter()
     event_id += 1
     payload["event_id"] = event_id
-    last_client_event = payload
+    if remember and _is_presentation(payload):
+        last_client_event = payload
     for listener in list(_event_listeners):
         try:
             listener.put_nowait(payload)
-        except Exception:
-            pass
+        except Exception as error:
+            print(f"✗ Dropped a live-wall event: {error}")
     return payload
+
+
+def _publish_error(message: str) -> None:
+    """Tell open walls a trigger failed without replacing the poem on /state."""
+    _publish_event({"reason": "error", "error": message}, remember=False)
 
 
 _ensure_opening_poem()
@@ -269,22 +284,9 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         original_word,
         engine.get_original_line_for_word_index(word_index)
     )
-    synonyms_list = translation_data.get('synonyms') or []
-    primary = (
-        translation_data.get('target_word')
-        or translation_data.get('primary_translation')
-        or (synonyms_list[0] if synonyms_list else original_word)
-    )
-
-    seen = set()
-    dedup_synonyms = []
-    for synonym in synonyms_list:
-        text = (synonym or '').strip()
-        key = normalize_reading(text)
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        dedup_synonyms.append(text)
+    readings = engine.unique_word_readings(translation_data, original_word)
+    primary = readings[0] if readings else original_word
+    dedup_synonyms = readings[1:]
 
     if not dedup_synonyms:
         engine.replace_word_in_transformation_state(word_index, primary)
@@ -471,27 +473,25 @@ async def _run_one_trigger() -> None:
             if engine.get_current_phase() == TransformationPhase.COMPLETE:
                 event = _change_to_next_poem()
                 if event is None:
-                    _publish_event({
-                        "reason": "error",
-                        "error": "No poem is available to show next",
-                    })
+                    _publish_error("No poem is available to show next")
                 return
 
             prev_state = engine.get_current_transformation_state()
             if engine.get_current_phase() == TransformationPhase.WORDS:
                 word_index = engine.claim_next_phase_1_word_index()
                 if word_index is not None:
-                    await _run_synonym_cycle_for_word(
-                        word_index, sequence_index, prev_state
-                    )
+                    try:
+                        await _run_synonym_cycle_for_word(
+                            word_index, sequence_index, prev_state
+                        )
+                    except Exception:
+                        engine.return_phase_1_word(word_index)
+                        raise
                     return
             await _run_block_trigger(sequence_index, prev_state)
     except Exception as error:
         print(f"✗ Trigger failed: {error}")
-        _publish_event({
-            "reason": "error",
-            "error": str(error),
-        })
+        _publish_error(str(error))
 
 
 @app.post("/trigger")
@@ -823,22 +823,47 @@ async def load_poem(payload: LoadPoemRequest):
     return _make_poem_live(stored_poem)
 
 
+SSE_KEEPALIVE_SECONDS = 15
+
+
 @app.get("/events")
 async def events():
-    """Send each trigger result to every open live page."""
+    """Push each trigger to every open live page.
+
+    A new connection is given the last drawable presentation so a refresh
+    or a dropped stream can catch up. Comments keep the proxy from closing
+    an idle wall.
+    """
     listener: asyncio.Queue = asyncio.Queue()
     _event_listeners.append(listener)
 
     async def stream():
         try:
+            if last_client_event is not None and _is_presentation(last_client_event):
+                yield f"data: {json.dumps(last_client_event, ensure_ascii=False)}\n\n"
             while True:
-                event = await listener.get()
+                try:
+                    event = await asyncio.wait_for(
+                        listener.get(),
+                        timeout=SSE_KEEPALIVE_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         finally:
             if listener in _event_listeners:
                 _event_listeners.remove(listener)
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/state")
