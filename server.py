@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import asyncio
@@ -41,6 +41,7 @@ current_poem_id = None
 # the sensor or another device still updates the screen.
 last_client_event = None
 event_id = 0
+_event_listeners: List[asyncio.Queue] = []
 
 # The order poems come up in. Shuffled, and every poem in the rotation is
 # shown once before any of them comes round again.
@@ -217,6 +218,11 @@ def _publish_event(event: dict) -> dict:
     event_id += 1
     payload["event_id"] = event_id
     last_client_event = payload
+    for listener in list(_event_listeners):
+        try:
+            listener.put_nowait(payload)
+        except Exception:
+            pass
     return payload
 
 
@@ -363,9 +369,8 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
         "unit_path": None,
         "previous_state": prev_state,
         **_render_snapshot(),
-        # A model may decide a scrap is already good. The trigger still spent
-        # itself examining that scrap, so the wall should animate it instead
-        # of appearing to have stopped receiving triggers.
+        # The trigger must change the page. These indices mark what it tried
+        # so the wall can draw the new wording.
         "presentation_indices": presentation_indices,
         # What the pass said it bettered, so a run can be read back as a
         # record of the decisions and not only of their results.
@@ -445,11 +450,7 @@ async def trigger():
                 return event
 
             prev_state = engine.get_current_transformation_state()
-            in_phase_1 = engine.get_current_phase() == TransformationPhase.WORDS
-            word_index = engine.claim_next_phase_1_word_index() if in_phase_1 else None
-            if word_index is None:
-                return await _run_block_trigger(sequence_index, prev_state)
-            return await _run_synonym_cycle_for_word(word_index, sequence_index, prev_state)
+            return await _run_block_trigger(sequence_index, prev_state)
     except HTTPException:
         raise
     except Exception as error:
@@ -760,6 +761,24 @@ async def load_poem(payload: LoadPoemRequest):
         **language_pair
     }
     return _make_poem_live(stored_poem)
+
+
+@app.get("/events")
+async def events():
+    """Send each trigger result to every open live page."""
+    listener: asyncio.Queue = asyncio.Queue()
+    _event_listeners.append(listener)
+
+    async def stream():
+        try:
+            while True:
+                event = await listener.get()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            if listener in _event_listeners:
+                _event_listeners.remove(listener)
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.get("/state")

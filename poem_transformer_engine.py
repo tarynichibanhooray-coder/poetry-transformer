@@ -270,11 +270,31 @@ class PoemTransformerEngine:
 
     # ------------------------------------------------------------- triggers
 
+    def is_at_resting_text(self) -> bool:
+        """True only at the exact chosen target, or exactly home on the way back."""
+        if self.on_return_journey:
+            return self.poem_has_returned()
+        return self.poem_has_arrived()
+
     def process_next_sensor_trigger(self) -> str:
-        """Advance the poem by one step and return the new reading."""
+        """Advance until the wall text changes, or the exact resting text is reached."""
         if self.current_phase == TransformationPhase.COMPLETE:
             return self.get_current_transformation_state()
 
+        before = self.get_current_transformation_state()
+        for _ in range(8):
+            self._advance_one_step()
+            after = self.get_current_transformation_state()
+            if self.current_phase == TransformationPhase.COMPLETE:
+                return after
+            if self.is_at_resting_text():
+                return after
+            if normalize_reading(after) != normalize_reading(before):
+                return after
+        return self.get_current_transformation_state()
+
+    def _advance_one_step(self) -> None:
+        """Take one stage action. May leave the text unchanged; the caller retries."""
         self.trigger_count += 1
         self.last_changed_span = None
         self.last_action_phase = self.current_phase
@@ -290,8 +310,6 @@ class PoemTransformerEngine:
             self.advance_phrases()
         elif self.current_phase == TransformationPhase.LINES:
             self.advance_lines()
-
-        return self.get_current_transformation_state()
 
     # -------------------------------------------------------------- stage 1
 
@@ -317,6 +335,13 @@ class PoemTransformerEngine:
             return
 
         chosen = (translation.get('target_word') or '').strip() or source_word
+        current = self.poem.units[index].text
+        if normalize_reading(chosen) == normalize_reading(current):
+            for synonym in translation.get('synonyms') or []:
+                synonym = (synonym or '').strip()
+                if synonym and normalize_reading(synonym) != normalize_reading(current):
+                    chosen = synonym
+                    break
         self.replace_word_in_transformation_state(index, chosen)
         self.last_block_improvement = f"{source_word} → {chosen}"
 
@@ -528,7 +553,33 @@ class PoemTransformerEngine:
             self.arrive()
             return
 
-        reading, label = self.variation_queue.pop(0)
+        current = self.get_current_transformation_state()
+        reading = None
+        label = ''
+        while self.variation_queue:
+            candidate, candidate_label = self.variation_queue.pop(0)
+            if (
+                self.is_at_resting_text()
+                or normalize_reading(candidate) != normalize_reading(current)
+            ):
+                reading = candidate
+                label = candidate_label
+                break
+        if reading is None:
+            destination = '\n'.join(self.destination_lines).strip()
+            if destination and normalize_reading(destination) != normalize_reading(current):
+                self.place_poem_reading(destination)
+                self.last_changed_span = (0, len(self.poem.units))
+                self.last_block_mode = 'variation'
+                self.last_block_improvement = 'the chosen rendering'
+                self.arrive()
+                return
+            if self.is_at_resting_text() or (
+                destination
+                and normalize_reading(current) == normalize_reading(destination)
+            ):
+                self.arrive()
+            return
         self.place_poem_reading(reading)
         self.last_changed_span = (0, len(self.poem.units))
         self.last_block_mode = 'variation'

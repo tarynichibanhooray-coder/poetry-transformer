@@ -597,10 +597,6 @@
           ? event.presentation_indices
           : [];
         const changed = changedIndices(lastWords, words, presentationIndices);
-        if (changed.length === 0) {
-          lastWords = words ? words.slice() : lastWords;
-          return;
-        }
         indices = changed.filter(index => (
           !Array.isArray(words) || index < words.length
         ));
@@ -689,7 +685,15 @@
     window.addEventListener('keydown', handleTriggerInput);
     window.addEventListener('pointerup', handleTriggerInput);
     loadState();
-    setInterval(loadState, 800);
+
+    const triggerStream = new EventSource(base + '/events');
+    triggerStream.onmessage = (message) => {
+      try {
+        applyEvent(JSON.parse(message.data));
+      } catch (err) {
+        console.error(err);
+      }
+    };
   </script>
 </body>
 </html>

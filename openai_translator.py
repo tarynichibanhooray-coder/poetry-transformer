@@ -380,10 +380,7 @@ class OpenAITranslator:
             unchanged=same_reading,
             reorder=reorder,
         )
-        # A new wording with no linguistic cause is preference. Do not place it.
-        unchanged = same_reading or defect == "none"
-        if reorder and defect == "word_order":
-            unchanged = False
+        unchanged = same_reading
         return {
             "lines": lines,
             "drafts": [],
@@ -397,7 +394,7 @@ class OpenAITranslator:
             ] or ([translation] if translation else []),
             "unchanged": unchanged,
             "improvement": caused_by or (
-                "word order" if reorder else ("already good" if unchanged else "context")
+                "word order" if reorder else ("echo" if unchanged else "rewrite")
             ),
             "defect": defect,
             "units": [unit for unit in (state.get("units") or []) if isinstance(unit, dict)],

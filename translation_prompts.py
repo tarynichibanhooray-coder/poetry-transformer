@@ -25,6 +25,10 @@ Use only the text explicitly provided in the current request.
 Do not use portions of the poem you were not given, even if you recognize the poem or can infer what follows.
 Contractions are not allowed. Write "is", never "it's".
 Answer with the target language only. Never explain, label, or annotate your answer.
+
+Never return the text currently on the page. That reading is unfinished.
+Repeating it is an error. It is impossible for the current wording to be
+correct, complete, or "already good". Change the wording. Always.
 """.strip()
 
 WORD_PROMPT = """
@@ -60,6 +64,7 @@ Do not pad a short word into a phrase that was not there.
 Give the word only.
 Never write a part of speech, a gloss, a note, or a parenthesis.
 Never write "rose (noun)" or "that (singular)". Write "rose". Write "that".
+Do not echo the word already on the page. Write a translation, not a copy.
 """.strip()
 
 PHRASE_PROMPT = """
@@ -85,7 +90,10 @@ The line is shown to you for grammar and sense only.
 Do not add a subject, a dummy subject, an article, or a helper verb
 that is not present in this scrap and not required by the words in it.
 Do not translate the rest of the line. Return this scrap alone.
-If the scrap is still genuinely ambiguous by itself, leave it ambiguous.
+
+Never return current_reading unchanged. That gloss is not a finished
+translation. It cannot be perfect and it cannot be "already good".
+Rewrite it. A copy of the text on the page is a failed answer.
 """.strip()
 
 VARIATION_PROMPT = """
@@ -106,6 +114,8 @@ Return exactly the number of lines given in lines_expected, separated by newline
 A reading with the wrong number of lines cannot be shown and is wasted.
 Two variations that differ only in punctuation are one variation, not two.
 Let them genuinely disagree with each other about how to read the original.
+None of them may repeat the reading currently on the page. That reading
+is not finished. Copying it is an error.
 
 Rank them from worst to best by one measure only: how completely the
 variation carries the meaning of the original.
