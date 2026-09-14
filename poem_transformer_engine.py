@@ -232,14 +232,17 @@ class PoemTransformerEngine:
         replacement_word: str
     ) -> None:
         if 0 <= word_index < len(self.poem.units):
-            self.poem.units[word_index].text = (replacement_word or '').strip()
+            self.poem.set_text(word_index, (replacement_word or '').strip())
             self.poem.units[word_index].visited = True
             self.last_changed_span = (word_index, word_index + 1)
 
     def preview_word_slots(self, word_index: int, replacement_word: str) -> List[str]:
         words = self.poem.texts()
         if 0 <= word_index < len(words):
-            words[word_index] = (replacement_word or '').strip()
+            words[word_index] = self.poem.text_for_source_position(
+                word_index,
+                (replacement_word or '').strip(),
+            )
         return words
 
     def preview_word_replacement(self, word_index: int, replacement_word: str) -> str:
@@ -601,8 +604,8 @@ class PoemTransformerEngine:
 
         words, _ = split_words_and_separators(' '.join(lines))
         spread = distribute_words(words, len(self.poem.units))
-        for index, unit in enumerate(self.poem.units):
-            unit.text = spread[index]
+        for index in range(len(self.poem.units)):
+            self.poem.set_text(index, spread[index])
 
     def place_line_reading(self, line_index: int, reading: str) -> None:
         """Spread a line across its units, so the page keeps its spans."""
@@ -613,7 +616,7 @@ class PoemTransformerEngine:
         words, _ = split_words_and_separators(reading)
         spread = distribute_words(words, end - start)
         for offset in range(start, end):
-            self.poem.units[offset].text = spread[offset - start]
+            self.poem.set_text(offset, spread[offset - start])
 
     def destination_line_for_index(self, line_index: int) -> str:
         if 0 <= line_index < len(self.destination_lines):

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import asyncio
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -82,6 +83,35 @@ LOG_INTERMEDIATE_SYNONYMS = os.environ.get("LOG_INTERMEDIATE_SYNONYMS", "false")
 
 # Lock to serialize synonym cycles so they don't overlap
 _cycle_lock = asyncio.Lock()
+last_background_error = None
+
+
+def _create_logged_task(coroutine, label: str) -> asyncio.Task:
+    """Start async work without letting its exceptions disappear."""
+    task = asyncio.create_task(coroutine, name=label)
+
+    def report_failure(completed: asyncio.Task) -> None:
+        global last_background_error
+        if completed.cancelled():
+            return
+        error = completed.exception()
+        if error is None:
+            return
+        last_background_error = {
+            "task": label,
+            "error": f"{type(error).__name__}: {error}",
+        }
+        print(
+            f"✗ Background task {label!r} failed: "
+            f"{last_background_error['error']}",
+            flush=True,
+        )
+        traceback.print_exception(
+            type(error), error, error.__traceback__
+        )
+
+    task.add_done_callback(report_failure)
+    return task
 
 OPENING_POEM = {
     "title": "Libro de las preguntas",
@@ -138,7 +168,7 @@ def _make_poem_live(stored_poem: Dict, broadcast: bool = True) -> Dict:
             }
         }
         _append_event_to_jsonl(event)
-        asyncio.create_task(_broadcast_event(event))
+        _create_logged_task(_broadcast_event(event), "poem-loaded broadcast")
 
     return {"status": "ok", "poem_id": current_poem_id, **language_pair}
 
@@ -414,10 +444,17 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
         acting_phase = engine.last_action_phase.name
 
     start_index, end_index = engine.last_changed_span or (None, None)
-    new_state = engine.get_current_transformation_state()
-    text_changed = ' '.join((prev_state or '').split()) != ' '.join((new_state or '').split())
-    if not text_changed:
-        start_index, end_index = None, None
+    # Turning around rebuilds the engine's queues and clears last_changed_span.
+    # The line-stage trigger still acted on the whole poem, even when the
+    # chosen reading was already on the wall.
+    if start_index is None and acting_phase == TransformationPhase.LINES.name:
+        start_index, end_index = 0, len(engine.current_words)
+
+    presentation_indices = (
+        list(range(start_index, end_index))
+        if start_index is not None and end_index is not None
+        else []
+    )
 
     event = {
         "sequence_index": seq_idx_start,
@@ -426,6 +463,10 @@ async def _run_block_trigger(seq_idx_start: int, prev_state: str):
         "unit_path": None,
         "previous_state": prev_state,
         **_render_snapshot(),
+        # A model may decide a scrap is already good. The trigger still spent
+        # itself examining that scrap, so the wall should animate it instead
+        # of appearing to have stopped receiving triggers.
+        "presentation_indices": presentation_indices,
         # What the pass said it bettered, so a run can be read back as a
         # record of the decisions and not only of their results.
         "reason": engine.last_block_improvement or "trigger",
@@ -525,7 +566,7 @@ async def trigger():
 
             await _run_synonym_cycle_for_word(word_index, sequence_index, prev_state)
 
-    asyncio.create_task(_task())
+    _create_logged_task(_task(), "sensor trigger")
 
     return {"status": "accepted"}
 
@@ -793,6 +834,7 @@ async def state():
     return {
         "current_state": engine.get_current_transformation_state(),
         "stats": engine.get_transformation_statistics(),
+        "background_task_error": last_background_error,
         **_current_language_pair()
     }
 

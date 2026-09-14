@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 import re
 
 WHITESPACE_RUN = re.compile(r'(\s+)')
+SENTENCE_END = re.compile(r"""[.!?…]+["'”’»)\]}]*$""")
 
 
 def split_words_and_separators(text: str) -> Tuple[List[str], List[str]]:
@@ -179,6 +180,37 @@ class UnitPoem:
         """Per-unit text, the array the client indexes into."""
         return [unit.text for unit in self.units]
 
+    def text_for_source_position(self, unit_index: int, text: str) -> str:
+        """Keep sentence and line starts capitalized in their display slot."""
+        if self.starts_sentence_or_line(unit_index):
+            return capitalize_first_letter(text)
+        return text or ''
+
+    def starts_sentence_or_line(self, unit_index: int) -> bool:
+        """Whether a capitalized source unit starts a sentence or line."""
+        if unit_index < 0 or unit_index >= len(self.units):
+            return False
+        source_letter = next(
+            (character for character in self.units[unit_index].source if character.isalpha()),
+            '',
+        )
+        if not source_letter.isupper():
+            return False
+        if unit_index == 0:
+            return True
+
+        previous = self.units[unit_index - 1]
+        return '\n' in previous.trailing or bool(
+            SENTENCE_END.search((previous.source or '').strip())
+        )
+
+    def set_text(self, unit_index: int, text: str) -> None:
+        """Place text while retaining capitalization implied by its source slot."""
+        if 0 <= unit_index < len(self.units):
+            self.units[unit_index].text = self.text_for_source_position(
+                unit_index, text
+            )
+
     def separators(self) -> List[str]:
         """Separator after each unit, so the client can group lines."""
         return [unit.trailing for unit in self.units]
@@ -262,7 +294,11 @@ class UnitPoem:
             segments = head + [tail]
 
         for offset, unit in enumerate(span_units):
-            unit.text = segments[offset] if offset < len(segments) else ''
+            unit_index = start + offset
+            self.set_text(
+                unit_index,
+                segments[offset] if offset < len(segments) else '',
+            )
 
     def place_line(self, line_index: int, segments: List[str]) -> None:
         spans = self.line_spans()
@@ -273,7 +309,7 @@ class UnitPoem:
 
 
 def capitalize_first_letter(text: str) -> str:
-    """Capitalize the first letter of the poem."""
+    """Capitalize the first letter, including after opening punctuation."""
     for index, character in enumerate(text or ''):
         if character.isalpha():
             return text[:index] + character.upper() + text[index + 1:]

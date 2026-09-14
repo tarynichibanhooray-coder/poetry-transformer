@@ -208,7 +208,8 @@
     ];
 
     const wsProto = (location.protocol === 'https:') ? 'wss' : 'ws';
-    const ws = new WebSocket(wsProto + '://' + location.host + '/ws');
+    let ws = null;
+    let reconnectTimer = null;
 
     let poemColor = POEM_COLORS[0];
     let play = Promise.resolve();
@@ -602,7 +603,10 @@
       if (isIntermediate) {
         indices = [snapshot.word_index];
       } else {
-        const changed = changedIndices(lastWords, words, []);
+        const presentationIndices = Array.isArray(event.presentation_indices)
+          ? event.presentation_indices
+          : [];
+        const changed = changedIndices(lastWords, words, presentationIndices);
         if (changed.length === 0) {
           lastWords = words ? words.slice() : lastWords;
           return;
@@ -641,15 +645,26 @@
       introEl.hidden = true;
     }
 
-    ws.onmessage = (evt) => {
-      try {
-        const event = JSON.parse(evt.data);
-        if (event && event.debug) showDebug(event.debug);
-        if (event) enqueue(event);
-      } catch (err) {
-        console.error('Invalid event', err);
-      }
-    };
+    function connectWebSocket() {
+      clearTimeout(reconnectTimer);
+      ws = new WebSocket(wsProto + '://' + location.host + '/ws');
+
+      ws.onmessage = (evt) => {
+        try {
+          const event = JSON.parse(evt.data);
+          if (event && event.debug) showDebug(event.debug);
+          if (event) enqueue(event);
+        } catch (err) {
+          console.error('Invalid event', err);
+        }
+      };
+
+      ws.onclose = () => {
+        reconnectTimer = setTimeout(connectWebSocket, 1000);
+      };
+    }
+
+    connectWebSocket();
 
     async function sendTrigger() {
       try {
