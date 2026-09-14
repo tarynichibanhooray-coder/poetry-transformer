@@ -424,8 +424,8 @@ def _change_to_next_poem() -> Optional[Dict]:
 async def trigger():
     """Advance the transformation by one trigger and return the change.
 
-    In Phase 1 a trigger picks the next word from the poem's shuffled order and
-    settles one selected translation. After that a trigger rewrites one block,
+    In Phase 1 a trigger shows the next sense of a word, cycling its synonyms
+    on the wall before leaving that word. After that a trigger rewrites one block,
     gathering toward the target. Once the target is on the page, the next
     triggers run that same word-then-gather process back toward the original
     language.

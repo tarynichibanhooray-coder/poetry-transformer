@@ -86,6 +86,8 @@ class PoemTransformerEngine:
         self.variation_queue = []
         self.span_states = {}
         self.word_synonym_cycle_index = {}
+        self.word_synonym_shown = {}
+        self.phase_1_current_index = None
         self.word_origins = {}
 
         self.last_changed_span = None
@@ -161,6 +163,8 @@ class PoemTransformerEngine:
         self.variation_queue = []
         self.span_states = {}
         self.word_synonym_cycle_index = {}
+        self.word_synonym_shown = {}
+        self.phase_1_current_index = None
         self.last_changed_span = None
         self.last_action_phase = None
         self.last_block_drafts = []
@@ -313,15 +317,49 @@ class PoemTransformerEngine:
 
     # -------------------------------------------------------------- stage 1
 
-    def advance_words(self) -> None:
-        """One source word, translated with nothing around it."""
-        index = self.claim_next_phase_1_word_index()
-        if index is None:
-            self.transition_to_phrases()
-            return
+    def _unique_word_readings(self, translation: Dict, source_word: str) -> List[str]:
+        """Primary sense first, then every distinct synonym."""
+        primary = (
+            translation.get('target_word')
+            or translation.get('primary_translation')
+            or ''
+        ).strip() or source_word
+        readings = []
+        seen = set()
+        for candidate in [primary, *(translation.get('synonyms') or [])]:
+            text = (candidate or '').strip()
+            key = normalize_reading(text)
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            readings.append(text)
+        return readings
 
+    def _finish_stage_1_word(self) -> None:
+        """Leave the current word and start the next one, or move to scraps."""
+        index = self.phase_1_current_index
+        if (
+            index is not None
+            and self.phase_1_word_queue
+            and self.phase_1_word_queue[0] == index
+        ):
+            self.phase_1_word_queue.pop(0)
+        self.phase_1_current_index = None
+        if not self.phase_1_word_queue:
+            self.transition_to_phrases()
+
+    def advance_words(self) -> None:
+        """Show the next sense of the current word, then move on after all senses."""
+        if self.phase_1_current_index is None:
+            if not self.phase_1_word_queue:
+                self.transition_to_phrases()
+                return
+            self.phase_1_current_index = self.phase_1_word_queue[0]
+
+        index = self.phase_1_current_index
         source_word = self.poem.units[index].source
         self.last_block_mode = 'word'
+        self.last_changed_span = (index, index + 1)
         try:
             translation = self.get_or_fetch_word_translation_with_synonyms(
                 source_word,
@@ -330,23 +368,33 @@ class PoemTransformerEngine:
         except Exception as error:
             print(f"✗ Word stage failed on {source_word!r}: {error}")
             self.last_debug_note = f"word {source_word!r} failed: {error}"
-            if not self.phase_1_word_queue:
-                self.transition_to_phrases()
+            self._finish_stage_1_word()
             return
 
-        chosen = (translation.get('target_word') or '').strip() or source_word
+        readings = self._unique_word_readings(translation, source_word)
         current = self.poem.units[index].text
-        if normalize_reading(chosen) == normalize_reading(current):
-            for synonym in translation.get('synonyms') or []:
-                synonym = (synonym or '').strip()
-                if synonym and normalize_reading(synonym) != normalize_reading(current):
-                    chosen = synonym
-                    break
-        self.replace_word_in_transformation_state(index, chosen)
-        self.last_block_improvement = f"{source_word} → {chosen}"
+        position = self.word_synonym_cycle_index.get(index, 0)
+        chosen = None
+        for offset in range(len(readings)):
+            candidate = readings[(position + offset) % len(readings)]
+            if normalize_reading(candidate) != normalize_reading(current):
+                chosen = candidate
+                self.word_synonym_cycle_index[index] = (
+                    (position + offset + 1) % len(readings)
+                )
+                break
 
-        if not self.phase_1_word_queue:
-            self.transition_to_phrases()
+        if chosen is None:
+            self._finish_stage_1_word()
+            return
+
+        self.replace_word_in_transformation_state(index, chosen)
+        self.last_block_drafts = readings
+        self.last_block_improvement = f"{source_word} → {chosen}"
+        shown = self.word_synonym_shown.get(index, 0) + 1
+        self.word_synonym_shown[index] = shown
+        if shown >= len(readings):
+            self._finish_stage_1_word()
 
     def record_iteration(
         self,
