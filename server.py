@@ -284,9 +284,22 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         original_word,
         engine.get_original_line_for_word_index(word_index)
     )
-    readings = engine.unique_word_readings(translation_data, original_word)
-    primary = readings[0] if readings else original_word
-    dedup_synonyms = readings[1:]
+    synonyms_list = translation_data.get('synonyms') or []
+    primary = (
+        translation_data.get('target_word')
+        or translation_data.get('primary_translation')
+        or (synonyms_list[0] if synonyms_list else original_word)
+    )
+
+    seen = set()
+    dedup_synonyms = []
+    for synonym in synonyms_list:
+        text = (synonym or '').strip()
+        key = normalize_reading(text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        dedup_synonyms.append(text)
 
     if not dedup_synonyms:
         engine.replace_word_in_transformation_state(word_index, primary)
