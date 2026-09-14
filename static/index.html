@@ -59,7 +59,7 @@
       overflow: visible;
     }
     .scrap + .scrap {
-      margin-left: 1px;
+      margin-left: 0.33em;
     }
     .scrap.open-left {
       margin-left: 0.34em;
@@ -312,7 +312,7 @@
     function wordsMarkup(words, indices) {
       return indices.map((index, position) => {
         const word = `<span class="word" data-index="${index}">${escapeHtml(words[index])}</span>`;
-        return position === 0 ? word : ` ${word}`;
+        return position === 0 ? word : `\u00a0${word}`;
       }).join('');
     }
 
@@ -527,6 +527,7 @@
         }
 
         if (heal && Array.isArray(words)) {
+          seams = new Set();
           renderSlots(words, separators, stateText, null);
           paintPoem(poemColor);
           tornFor = null;
@@ -635,7 +636,13 @@
       if (!event) return;
       if (event.event_id != null && event.event_id === lastEventId) return;
       lastEventId = event.event_id != null ? event.event_id : lastEventId;
+      if (event.error) {
+        wallError.textContent = event.error;
+        return;
+      }
       if (event.debug) showDebug(event.debug);
+      if (event.new_state === undefined && !Array.isArray(event.words)) return;
+      wallError.textContent = '';
       enqueue(event);
     }
 
@@ -664,8 +671,8 @@
           } catch (ignored) {}
           throw new Error(detail);
         }
-        wallError.textContent = '';
-        applyEvent(await response.json());
+        const body = await response.json();
+        applyEvent(body);
       } catch (err) {
         console.error('Trigger failed', err);
         wallError.textContent = err.message || 'Trigger failed';

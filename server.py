@@ -55,6 +55,15 @@ SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "2.4"))
 LOG_INTERMEDIATE_SYNONYMS = os.environ.get(
     "LOG_INTERMEDIATE_SYNONYMS", "false"
 ).lower() in ("1", "true", "yes")
+_background_tasks: set = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    """Keep a background trigger alive until it finishes."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 OPENING_POEM = {
     "title": "Libro de las preguntas",
@@ -451,9 +460,43 @@ def _change_to_next_poem() -> Optional[Dict]:
     return _event_for_clients(_make_poem_live(following))
 
 
+async def _run_one_trigger() -> None:
+    """Do the work of one trigger without holding the HTTP request open.
+
+    Stage 1 sleeps between synonyms. If that sleep happens inside POST
+    /trigger, Render's proxy gives up and the wall sees 502.
+    """
+    try:
+        async with _cycle_lock:
+            if engine.get_current_phase() == TransformationPhase.COMPLETE:
+                event = _change_to_next_poem()
+                if event is None:
+                    _publish_event({
+                        "reason": "error",
+                        "error": "No poem is available to show next",
+                    })
+                return
+
+            prev_state = engine.get_current_transformation_state()
+            if engine.get_current_phase() == TransformationPhase.WORDS:
+                word_index = engine.claim_next_phase_1_word_index()
+                if word_index is not None:
+                    await _run_synonym_cycle_for_word(
+                        word_index, sequence_index, prev_state
+                    )
+                    return
+            await _run_block_trigger(sequence_index, prev_state)
+    except Exception as error:
+        print(f"✗ Trigger failed: {error}")
+        _publish_event({
+            "reason": "error",
+            "error": str(error),
+        })
+
+
 @app.post("/trigger")
 async def trigger():
-    """Advance the transformation by one trigger and return the change.
+    """Start one trigger and return immediately.
 
     In Phase 1 a trigger takes one word and cycles every synonym through
     that slot on the wall, then settles on the primary. After that a trigger
@@ -465,34 +508,14 @@ async def trigger():
     poem instead of translating: the sensor is the only thing driving an
     unattended wall, so the rotation has to turn on it.
 
-    The request waits for exactly one action and returns its presentation event.
+    The cycle is published on /events. This response only means the trigger
+    was accepted, so a long synonym walk cannot time out the proxy.
     """
     if not engine.original_poem_words:
         raise HTTPException(status_code=400, detail="No poem loaded")
 
-    # One lock across every phase. Without it, accidental concurrent requests
-    # could interleave and rewrite the same part of the poem.
-    try:
-        async with _cycle_lock:
-            if engine.get_current_phase() == TransformationPhase.COMPLETE:
-                event = _change_to_next_poem()
-                if event is None:
-                    raise HTTPException(status_code=409, detail="No poem is available to show next")
-                return event
-
-            prev_state = engine.get_current_transformation_state()
-            if engine.get_current_phase() == TransformationPhase.WORDS:
-                word_index = engine.claim_next_phase_1_word_index()
-                if word_index is not None:
-                    return await _run_synonym_cycle_for_word(
-                        word_index, sequence_index, prev_state
-                    )
-            return await _run_block_trigger(sequence_index, prev_state)
-    except HTTPException:
-        raise
-    except Exception as error:
-        print(f"✗ Trigger failed: {error}")
-        raise HTTPException(status_code=500, detail=str(error)) from error
+    _spawn(_run_one_trigger())
+    return {"status": "ok", "accepted": True}
 
 
 @app.get("/languages")
