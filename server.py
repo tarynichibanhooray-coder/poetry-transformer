@@ -423,19 +423,25 @@ async def trigger():
 
     # One lock across every phase. Without it, accidental concurrent requests
     # could interleave and rewrite the same part of the poem.
-    async with _cycle_lock:
-        if engine.get_current_phase() == TransformationPhase.COMPLETE:
-            event = _change_to_next_poem()
-            if event is None:
-                raise HTTPException(status_code=409, detail="No poem is available to show next")
-            return event
+    try:
+        async with _cycle_lock:
+            if engine.get_current_phase() == TransformationPhase.COMPLETE:
+                event = _change_to_next_poem()
+                if event is None:
+                    raise HTTPException(status_code=409, detail="No poem is available to show next")
+                return event
 
-        prev_state = engine.get_current_transformation_state()
-        in_phase_1 = engine.get_current_phase() == TransformationPhase.WORDS
-        word_index = engine.claim_next_phase_1_word_index() if in_phase_1 else None
-        if word_index is None:
-            return await _run_block_trigger(sequence_index, prev_state)
-        return await _run_synonym_cycle_for_word(word_index, sequence_index, prev_state)
+            prev_state = engine.get_current_transformation_state()
+            in_phase_1 = engine.get_current_phase() == TransformationPhase.WORDS
+            word_index = engine.claim_next_phase_1_word_index() if in_phase_1 else None
+            if word_index is None:
+                return await _run_block_trigger(sequence_index, prev_state)
+            return await _run_synonym_cycle_for_word(word_index, sequence_index, prev_state)
+    except HTTPException:
+        raise
+    except Exception as error:
+        print(f"✗ Trigger failed: {error}")
+        raise HTTPException(status_code=500, detail=str(error)) from error
 
 
 @app.get("/languages")
