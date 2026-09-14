@@ -669,8 +669,6 @@
           } catch (ignored) {}
           throw new Error(detail);
         }
-        const body = await response.json();
-        applyEvent(body);
       } catch (err) {
         console.error('Trigger failed', err);
         wallError.textContent = err.message || 'Trigger failed';
@@ -690,30 +688,16 @@
     window.addEventListener('keydown', handleTriggerInput);
     window.addEventListener('pointerup', handleTriggerInput);
 
-    function connectTriggerStream() {
-      const triggerStream = new EventSource(base + '/events');
-      let resync = null;
-      triggerStream.onmessage = (message) => {
-        try {
-          applyEvent(JSON.parse(message.data));
-        } catch (err) {
-          console.error(err);
-        }
-      };
-      triggerStream.onopen = () => {
-        if (!poemEl.childNodes.length) loadState();
-      };
-      triggerStream.onerror = () => {
-        if (resync) return;
-        resync = setTimeout(() => {
-          resync = null;
-          loadState();
-        }, 500);
-      };
-    }
+    const triggerStream = new EventSource(base + '/events');
+    triggerStream.onmessage = (message) => {
+      try {
+        applyEvent(JSON.parse(message.data));
+      } catch (err) {
+        console.error(err);
+      }
+    };
 
     loadState();
-    connectTriggerStream();
   </script>
 </body>
 </html>

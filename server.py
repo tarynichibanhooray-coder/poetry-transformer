@@ -284,70 +284,32 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         original_word,
         engine.get_original_line_for_word_index(word_index)
     )
-    synonyms_list = translation_data.get('synonyms') or []
-    primary = (
-        translation_data.get('target_word')
-        or translation_data.get('primary_translation')
-        or (synonyms_list[0] if synonyms_list else original_word)
-    )
-
-    seen = set()
-    dedup_synonyms = []
-    for synonym in synonyms_list:
-        text = (synonym or '').strip()
-        key = normalize_reading(text)
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        dedup_synonyms.append(text)
-
-    if not dedup_synonyms:
-        engine.replace_word_in_transformation_state(word_index, primary)
-        engine.word_synonym_cycle_index[word_index] = 0
-        engine.note_phase_1_word_completed()
-        event = {
-            "sequence_index": seq_idx_start,
-            "timestamp": None,
-            "unit_level": "poem",
-            "unit_path": None,
-            "previous_state": prev_state,
-            **_render_snapshot(),
-            "reason": "trigger",
-            "confidence": 0.8,
-            "alternatives": [],
-            "triggered_by_context": False,
-            "context_snapshot": {
-                "word_index": word_index,
-                "phase": acting_phase,
-                "phase_after": engine.get_current_phase().name,
-            }
-        }
-        _append_event_to_jsonl(event)
-        sequence_index += 1
-        return _event_for_clients(event)
+    readings = engine.unique_word_readings(translation_data, original_word)
+    primary = readings[0] if readings else original_word
 
     current = engine.current_words[word_index]
-    for synonym in dedup_synonyms:
-        if normalize_reading(synonym) == normalize_reading(current):
+    for reading in readings:
+        if normalize_reading(reading) == normalize_reading(current):
             continue
-        current = synonym
+        current = reading
         inter_event = {
             "sequence_index": None,
             "timestamp": None,
             "unit_level": "poem",
             "unit_path": None,
             "previous_state": prev_state,
-            **_render_snapshot(engine.preview_word_slots(word_index, synonym)),
+            **_render_snapshot(engine.preview_word_slots(word_index, reading)),
             "reason": "synonym_cycle",
             "confidence": 0.0,
-            "alternatives": dedup_synonyms,
+            "alternatives": readings,
             "intermediate": True,
             "triggered_by_context": False,
             "context_snapshot": {
                 "word_index": word_index,
                 "phase": acting_phase,
                 "phase_after": acting_phase,
-            }
+            },
+            "presentation_indices": [word_index],
         }
         _publish_event(inter_event)
         if LOG_INTERMEDIATE_SYNONYMS:
@@ -358,11 +320,7 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         await asyncio.sleep(SYNONYM_CYCLE_INTERVAL)
 
     engine.replace_word_in_transformation_state(word_index, primary)
-    try:
-        idx = dedup_synonyms.index(primary)
-        engine.word_synonym_cycle_index[word_index] = (idx + 1) % max(1, len(dedup_synonyms))
-    except ValueError:
-        engine.word_synonym_cycle_index[word_index] = 0
+    engine.word_synonym_cycle_index[word_index] = 0
 
     engine.note_phase_1_word_completed()
 
@@ -375,13 +333,14 @@ async def _run_synonym_cycle_for_word(word_index: int, seq_idx_start: int, prev_
         **_render_snapshot(),
         "reason": "trigger",
         "confidence": 0.8,
-        "alternatives": dedup_synonyms,
+        "alternatives": readings,
         "triggered_by_context": False,
         "context_snapshot": {
             "word_index": word_index,
             "phase": acting_phase,
             "phase_after": engine.get_current_phase().name,
-        }
+        },
+        "presentation_indices": [word_index],
     }
     _append_event_to_jsonl(event)
     sequence_index += 1
