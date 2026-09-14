@@ -88,6 +88,36 @@ class OneWordAtATime:
     last_exchange = {}
 
 
+class UnchangedPhrase:
+    """A phrase answer that is valid but leaves its scrap as it was."""
+
+    last_exchange = {}
+
+    def request_phrase_translation(self, scrap_source, **kwargs):
+        reading = kwargs["current_reading"]
+        return {
+            "segments": [reading],
+            "unchanged": True,
+            "improvement": "already good",
+            "translation_state": {},
+        }
+
+    def clear_last_exchange(self):
+        pass
+
+
+class NoVariations:
+    """A stage-three fake that makes the engine turn around immediately."""
+
+    last_exchange = {}
+
+    def request_poem_variations(self, *args, **kwargs):
+        return []
+
+    def clear_last_exchange(self):
+        pass
+
+
 class FinishesWhileTheNextTriggerWaits:
     """Translates a word slowly, and the poem is finished by the time it ends.
 
@@ -312,6 +342,89 @@ class OneTriggerOneAction(PoemChangeTestCase):
         self.assertEqual(server.current_poem_id, self.ids["Second"])
         self.assertEqual(server.engine.get_current_phase(), WORDS)
         self.assertEqual(translator.calls, 1)
+
+
+class PhaseBoundaryPresentation(PoemChangeTestCase):
+    """A valid no-op must still look like a trigger on the live wall."""
+
+    def capture_broadcasts(self):
+        events = []
+        real = server._broadcast_event
+
+        async def capture(event):
+            events.append(event)
+
+        server._broadcast_event = capture
+        self.addCleanup(setattr, server, "_broadcast_event", real)
+        return events
+
+    def prepare_phrases(self, span_count):
+        self.put_up("First")
+        server.engine.ai_translator = UnchangedPhrase()
+        server.engine.phase_1_word_queue = []
+        server.engine.transition_to_phrases()
+        server.engine.phrase_span_queue = [(0, 2)] * span_count
+
+    def test_first_unchanged_phrase_after_words_is_presented(self):
+        self.prepare_phrases(span_count=2)
+        events = self.capture_broadcasts()
+
+        fire()
+
+        event = events[-1]
+        self.assertEqual(event["context_snapshot"]["phase"], "PHRASES")
+        self.assertEqual(event["context_snapshot"]["phase_after"], "PHRASES")
+        self.assertEqual(event["presentation_indices"], [0, 1])
+
+    def test_last_unchanged_phrase_entering_lines_is_presented(self):
+        self.prepare_phrases(span_count=1)
+        events = self.capture_broadcasts()
+
+        fire()
+
+        event = events[-1]
+        self.assertEqual(event["context_snapshot"]["phase_after"], "LINES")
+        self.assertEqual(event["presentation_indices"], [0, 1])
+
+    def test_unchanged_line_stage_turnaround_is_presented(self):
+        self.put_up("First")
+        server.engine.ai_translator = NoVariations()
+        server.engine.phase_1_word_queue = []
+        server.engine.transition_to_phrases()
+        server.engine.phrase_span_queue = []
+        server.engine.transition_to_lines()
+        events = self.capture_broadcasts()
+
+        fire()
+
+        event = events[-1]
+        self.assertTrue(server.engine.on_return_journey)
+        self.assertEqual(event["context_snapshot"]["phase"], "LINES")
+        self.assertEqual(event["context_snapshot"]["phase_after"], "WORDS")
+        self.assertEqual(event["presentation_indices"], [0, 1, 2, 3, 4])
+
+    def test_unchanged_return_arrival_is_presented_before_complete(self):
+        self.put_up("First")
+        server.engine.ai_translator = NoVariations()
+        server.engine.on_return_journey = True
+        server.engine.home_poem = server.engine.get_current_transformation_state()
+        server.engine.destination_lines = server.engine.home_poem.splitlines()
+        server.engine.phase_1_word_queue = []
+        server.engine.transition_to_phrases()
+        server.engine.phrase_span_queue = []
+        server.engine.transition_to_lines()
+        events = self.capture_broadcasts()
+
+        fire()
+
+        event = events[-1]
+        self.assertEqual(server.engine.get_current_phase(), COMPLETE)
+        self.assertEqual(event["context_snapshot"]["phase_after"], "COMPLETE")
+        self.assertEqual(event["presentation_indices"], [0, 1, 2, 3, 4])
+
+    def test_wall_uses_presentation_indices_when_text_is_unchanged(self):
+        wall = (server.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        self.assertIn("event.presentation_indices", wall)
 
 
 class TriggersAtTheBoundary(PoemChangeTestCase):
