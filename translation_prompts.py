@@ -188,12 +188,15 @@ TRANSLATION_STATE_SCHEMA = {
     "required": ["translation", "units", "revisions", "ambiguities"],
 }
 
+MIN_POEM_VARIATIONS = 5
+
 POEM_VARIATIONS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "variations": {
             "type": "array",
+            "minItems": MIN_POEM_VARIATIONS,
             "items": {
                 "type": "object",
                 "additionalProperties": False,

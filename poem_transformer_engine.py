@@ -631,7 +631,7 @@ class PoemTransformerEngine:
         except Exception as error:
             print(f"✗ Variation stage failed: {error}")
             self.last_debug_note = f"variations failed: {error}"
-            variations = []
+            raise
 
         total = len(variations)
         queue = []

@@ -15,6 +15,7 @@ from openai import OpenAI, OpenAIError
 import config
 from translation_prompts import (
     GLOBAL_TRANSLATION_INSTRUCTIONS,
+    MIN_POEM_VARIATIONS,
     PHRASE_PROMPT,
     POEM_VARIATIONS_SCHEMA,
     TRANSLATION_STATE_SCHEMA,
@@ -135,34 +136,36 @@ class OpenAITranslator:
         lines_expected: int = 0,
         **_ignored
     ) -> List[Dict]:
-        """Stage 3. Several complete attempts at the whole poem, ranked.
+        """Stage 3. Five or more complete attempts at the whole poem, ranked.
 
         Nothing here is told where the poem is going. The attempts are asked
         for on the single measure of fidelity to the original, and the engine
-        shows them worst first.
+        shows them worst first. Fewer than five readings is a failed call.
         """
-        state = self.request_translation_state(
-            VARIATION_PROMPT,
-            self.restricted_payload(
-                "variations",
-                source_poem,
-                None,
-                extras={
-                    "current_reading": current_reading or "",
-                    "write_in_language": target_language or "",
-                    "lines_expected": lines_expected or len(
-                        [line for line in (source_poem or "").split("\n") if line.strip()]
-                    ),
-                },
+        extras = {
+            "current_reading": current_reading or "",
+            "write_in_language": target_language or "",
+            "lines_expected": lines_expected or len(
+                [line for line in (source_poem or "").split("\n") if line.strip()]
             ),
-            schema=POEM_VARIATIONS_SCHEMA,
-            schema_name="poem_variations",
-            # Five readings that genuinely disagree will not come out of a
-            # temperature tuned for settling on one right answer.
-            temperature=config.VARIATION_TEMPERATURE,
+        }
+        variations = []
+        for _ in range(2):
+            state = self.request_translation_state(
+                VARIATION_PROMPT,
+                self.restricted_payload("variations", source_poem, None, extras=extras),
+                schema=POEM_VARIATIONS_SCHEMA,
+                schema_name="poem_variations",
+                temperature=config.VARIATION_TEMPERATURE,
+            )
+            self.tag_last_exchange(kind="variations")
+            variations = self.variations_from_state(state)
+            if len(variations) >= MIN_POEM_VARIATIONS:
+                return variations
+        raise ValueError(
+            f"Stage 3 requires {MIN_POEM_VARIATIONS} readings, "
+            f"got {len(variations)}"
         )
-        self.tag_last_exchange(kind="variations")
-        return self.variations_from_state(state)
 
     def variations_from_state(self, state: Dict) -> List[Dict]:
         """Rank order, worst first, with blanks and duplicates removed."""
