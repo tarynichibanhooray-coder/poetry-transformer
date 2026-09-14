@@ -85,7 +85,9 @@ POEM_FILE_PATH = BASE_DIR / "poem.txt"
 # DATABASE CONFIGURATION
 # ============================================================================
 
-DATABASE_FILE_PATH = BASE_DIR / "poetry_transformer.db"
+DATABASE_FILE_PATH = Path(
+    os.getenv("DATABASE_FILE_PATH", BASE_DIR / "poetry_transformer.db")
+)
 DATABASE_ENABLE_LOGGING = False  # Set to True for debugging
 
 # Preserve every future API result and its supporting history.
@@ -122,7 +124,12 @@ DISPLAY_OUTPUT_MODE = "console"
 DISPLAY_OUTPUT_FILE_PATH = BASE_DIR / "output" / "transformed_poem.txt"
 
 # Translation presentation-event history.
-STREAM_OUTPUT_JSONL_PATH = BASE_DIR / "output" / "translation_stream.jsonl"
+STREAM_OUTPUT_JSONL_PATH = Path(
+    os.getenv(
+        "STREAM_OUTPUT_JSONL_PATH",
+        BASE_DIR / "output" / "translation_stream.jsonl",
+    )
+)
 
 # ============================================================================
 # TRANSFORMATION PHASE CONFIGURATION
