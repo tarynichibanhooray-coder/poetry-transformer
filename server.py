@@ -850,15 +850,6 @@ async def events():
 
 @app.get("/state")
 async def state():
-    """Open on the origin: the original poem, Stage 1."""
-    async with _cycle_lock:
-        stored = (
-            engine.database_manager.retrieve_poem_entry_by_id(current_poem_id)
-            if current_poem_id is not None
-            else None
-        )
-        if stored:
-            return _make_poem_live(stored, record_event=False)
     if last_client_event is not None:
         return last_client_event
     event = {
