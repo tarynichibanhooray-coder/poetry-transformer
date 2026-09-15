@@ -105,22 +105,6 @@ def drops_content_words(before: str, after: str) -> bool:
     return False
 
 
-def distribute_words(words: List[str], count: int) -> List[str]:
-    """Spread words evenly across a number of spans, keeping their order.
-
-    Only the page's rhythm depends on this. A reading that came back as one
-    piece still has to sit in the spans already on screen, or a revision
-    would read as the line being replaced rather than changed.
-    """
-    if count <= 0:
-        return []
-    groups: List[List[str]] = [[] for _ in range(count)]
-    if words:
-        for position, word in enumerate(words):
-            groups[min(position * count // len(words), count - 1)].append(word)
-    return [' '.join(group) for group in groups]
-
-
 def render_units(texts: List[str], trailings: List[str]) -> str:
     """Join unit texts, skipping empties but keeping their line breaks."""
     pieces = []
@@ -324,6 +308,35 @@ class UnitPoem:
             return
         start, end = spans[line_index]
         self.place_span(start, end, segments)
+
+    def replace_line(self, line_index: int, reading: str) -> None:
+        """Replace a line with fresh units sized to `reading`'s own words.
+
+        A translation is not required to fill the same number of word
+        slots the line it replaces used to: the slot count is a rendering
+        detail, not a constraint on the translation. Squeezing new words
+        into old slots would silently regroup them regardless of what the
+        new reading actually says.
+        """
+        spans = self.line_spans()
+        if line_index >= len(spans):
+            return
+        start, end = spans[line_index]
+        line_ending = self.units[end - 1].trailing if end - 1 < len(self.units) else ' '
+
+        words, separators = split_words_and_separators(reading)
+        if not words:
+            return
+
+        new_units = []
+        for index, word in enumerate(words):
+            is_last = index == len(words) - 1
+            trailing = line_ending if is_last else (
+                separators[index] if index < len(separators) else ' '
+            )
+            new_units.append(Unit(source=word, text=word, trailing=trailing))
+
+        self.units[start:end] = new_units
 
 
 def capitalize_first_letter(text: str) -> str:

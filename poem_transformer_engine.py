@@ -28,12 +28,10 @@ from database_manager import DatabaseManager
 from openai_translator import OpenAITranslator
 from translation_units import (
     UnitPoem,
-    distribute_words,
     drops_content_words,
     normalize_reading,
     reading_distance,
     render_units,
-    split_words_and_separators,
 )
 from word_senses import source_stem
 
@@ -555,10 +553,7 @@ class PoemTransformerEngine:
 
     def load_phrase_edits(self) -> None:
         """Ask once for several small edits, anywhere in the poem."""
-        source_poem = '\n'.join(
-            self.poem.source_line(index)
-            for index in range(len(self.poem.line_spans()))
-        )
+        source_poem = self.original_poem or ''
         try:
             edits = self.ai_translator.request_phrase_edits(
                 source_poem,
@@ -636,10 +631,7 @@ class PoemTransformerEngine:
 
     def load_variations(self) -> None:
         """Ask once for several readings, and queue them worst to best."""
-        source_poem = '\n'.join(
-            self.poem.source_line(index)
-            for index in range(len(self.poem.line_spans()))
-        )
+        source_poem = self.original_poem or ''
         try:
             variations = self.ai_translator.request_poem_variations(
                 source_poem,
@@ -679,10 +671,10 @@ class PoemTransformerEngine:
     def place_poem_reading(self, reading: str) -> None:
         """Write a whole reading back across the poem's lines.
 
-        An attempt is asked to keep the line count and sometimes does not.
-        When it does not, the reading is spread across every unit instead,
-        because placing the lines it did send would leave the rest of the
-        poem showing the previous attempt underneath it.
+        Each line is rebuilt at whatever length its own words need. The
+        slot count is a rendering detail, not a constraint on the
+        translation: a line is never squeezed into the word count the
+        line it replaces happened to have.
         """
         spans = self.poem.line_spans()
         lines = [line for line in (reading or '').split('\n') if line.strip()]
@@ -694,21 +686,15 @@ class PoemTransformerEngine:
                 self.place_line_reading(line_index, line)
             return
 
-        words, _ = split_words_and_separators(' '.join(lines))
-        spread = distribute_words(words, len(self.poem.units))
-        for index in range(len(self.poem.units)):
-            self.poem.set_text(index, spread[index])
+        # An attempt is asked to keep the line count and sometimes does
+        # not. Rebuilding fresh from what it actually sent still shows
+        # the whole reading, rather than flattening it into the old
+        # line and word structure.
+        self.poem = UnitPoem.from_text(reading)
 
     def place_line_reading(self, line_index: int, reading: str) -> None:
-        """Spread a line across its units, so the page keeps its spans."""
-        spans = self.poem.line_spans()
-        if line_index >= len(spans):
-            return
-        start, end = spans[line_index]
-        words, _ = split_words_and_separators(reading)
-        spread = distribute_words(words, end - start)
-        for offset in range(start, end):
-            self.poem.set_text(offset, spread[offset - start])
+        """Replace a line with a fresh reading, at whatever length it needs."""
+        self.poem.replace_line(line_index, reading)
 
     def destination_line_for_index(self, line_index: int) -> str:
         if 0 <= line_index < len(self.destination_lines):

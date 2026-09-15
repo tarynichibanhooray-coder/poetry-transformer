@@ -19,8 +19,13 @@ rather than an open question.
 """
 
 GLOBAL_TRANSLATION_INSTRUCTIONS = """
-You are a professional translator who specializes in poetry and English literature.
-You admire and respect this beautiful poem and endeavour bit by bit to find a beautiful and accurate translation.
+You are a translator working on a piece of contemporary poetry.
+Use plain, ordinary, contemporary language throughout: the words a
+person would actually say or write today. Never reach for an ornate or
+archaic word to sound more "poetic" -- "dress" is dress, never "garment,"
+"attire," "gown," "raiment," or "adornment"; "naked" is naked, never
+"unclothed" or "undressed." A plainer word is not a weaker choice here.
+
 Treat each request as an independent linguistic state.
 Use only the text explicitly provided in the current request.
 Do not use portions of the poem you were not given, even if you recognize the poem or can infer what follows.
@@ -76,6 +81,25 @@ Find between three and ten separate places in the current reading where a
 change would bring it closer to the original poem's meaning.
 Reorder, combine, invert a question, fix a wrong sense. Do not decorate.
 
+Treat each of these as an experiment, not a correction. You are testing
+whether a different order or relationship between these two or three
+words brings the line's actual effect -- its emphasis, its rhythm, what
+it holds back until last, what it makes ambiguous on purpose -- closer
+to what the original is doing. Order is one of the primary tools here,
+not an afterthought: which word leads, which word lands last, and what
+sits next to what can change what the line means as much as any word
+choice does. A change that only swaps in a different word for the same
+role, with the same order and the same relationship between the words,
+is a weak experiment even when it is technically a "change." Prefer a
+change that tries a real, different arrangement of the words you are
+given.
+
+Word choice can be part of the experiment too, but change words in
+tandem, not one at a time. If changing one word changes what the word
+next to it needs to be, change that one too. A scrap where each word was
+picked separately, as if the others were not there, reads as a list of
+small unrelated decisions, not a considered phrase.
+
 current_reading must be two or three words. Never one word. Never four
 or more. Never a whole line, and never the whole poem. If the fix you
 have in mind needs more than three words, it is too big for one edit:
@@ -93,8 +117,14 @@ Count the words in current_reading before you write it down. If the
 count is not two or three, choose a smaller piece of the line instead.
 
 For each change, give current_reading exactly as it appears on the page
-right now, copied verbatim, and translation, your rewrite of those same
-two or three words and nothing else.
+right now, copied verbatim, and translation, your rewrite of that piece
+and nothing outside it. The two-or-three-word count applies to
+current_reading: which piece of the page you are working on. It does not
+apply to translation. A real translation is often longer or shorter than
+what it replaces -- "Dime" rightly becomes two words, "does it only
+have" rightly answers to two -- and forcing your rewrite to match the
+same word count as the piece it replaces is not a real constraint, it is
+a wrong one. Write however many words the actual translation takes.
 
 The poem in its original language and the current reading are often in
 two different languages, especially early on, when the current reading
@@ -138,6 +168,19 @@ Nothing outranks that. Not elegance, not economy, not the reading on the page.
 You are free to choose any words and any word order.
 Nothing decided earlier binds you, including the reading currently on the page.
 Discard it entirely if a better reading of the original requires that.
+
+Treat each variation as an experiment, not a safer rewording of the last
+one. Test a genuinely different arrangement: different word order,
+different emphasis, a different way of resolving what the original
+leaves ambiguous -- not the same sentence with a word or two swapped for
+a fancier synonym. Order matters as much as word choice: which word
+leads, which word is held until the end, and what sits next to what can
+change what a line means as much as any single word does. Change words
+in tandem when you change them, not one at a time, so each variation
+reads as one considered attempt, not a list of separate word swaps. Two
+variations that share the same order and the same relationships between
+their words, differing only in which synonym fills each role, are not
+two genuine attempts. They are one attempt copied with a thesaurus.
 
 Each variation must be a full reading of the whole poem.
 Return exactly the number of lines given in lines_expected, separated by newlines.
