@@ -285,15 +285,26 @@ class PoemTransformerEngine:
         return self.poem_has_arrived()
 
     def process_next_sensor_trigger(self) -> str:
-        """Advance until the wall text changes, or the exact resting text is reached."""
+        """Advance until the wall text changes, or the exact resting text is reached.
+
+        Stage 2 can join words without changing the page string. If this
+        loop only watches the string, it keeps taking scraps and then
+        walks Stage 3 until the poem is finished. One trigger is one scrap
+        or one attempt, even when the full text looks the same.
+        """
         if self.current_phase == TransformationPhase.COMPLETE:
             return self.get_current_transformation_state()
 
         before = self.get_current_transformation_state()
+        started_phase = self.current_phase
         for _ in range(8):
             self._advance_one_step()
             after = self.get_current_transformation_state()
             if self.current_phase == TransformationPhase.COMPLETE:
+                return after
+            if self.current_phase != started_phase:
+                return after
+            if self.last_changed_span is not None:
                 return after
             if self.is_at_resting_text():
                 return after
