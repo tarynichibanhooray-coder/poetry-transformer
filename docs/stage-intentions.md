@@ -6,6 +6,8 @@ They do not replace it.
 The wall is HTTP only. One live poem. Space, a tap, or `POST /trigger` is
 one trigger. One trigger is one user-visible action on the wall.
 
+A start is the origin: the original poem, Stage 1.
+
 Three stages outward. Then the languages swap and the same three stages
 run home. Each word remembers what it was translated from on the way out.
 
