@@ -96,6 +96,24 @@ For each change, give current_reading exactly as it appears on the page
 right now, copied verbatim, and translation, your rewrite of those same
 two or three words and nothing else.
 
+The poem in its original language and the current reading are often in
+two different languages, especially early on, when the current reading
+is still a rough word-by-word gloss. current_reading must be copied from
+the current reading only. Never copy it from the poem in its original
+language, even when the current reading looks broken or ungrammatical
+and the original poem reads more naturally. A fluent phrase is worthless
+here if it is not the exact wording already on the page.
+
+Example: the poem in its original language is "Tell me, is the rose
+naked" and the current reading is "Dime me está la rosa desnuda". Right:
+current_reading "la rosa desnuda" -> translation "desnuda la rosa".
+Wrong: current_reading "is the rose" -> translation "the rose is". That
+phrase is not in the current reading at all; it was copied from the
+original poem, which happens to be in a different language here. If you
+cannot find two or three matching words in the current reading itself,
+that place is not available this round -- do not invent one from the
+original poem instead.
+
 You can change the words. Everything those words name has to survive.
 Do not add a subject, a dummy subject, an article, or a helper verb
 that is not present in the words you are changing and not required by
