@@ -50,16 +50,14 @@ class WordTranslator:
     def validate_word_translation_response(self, response):
         return True
 
-    def request_phrase_translation(self, scrap_source, **kwargs):
-        reading = kwargs.get("current_reading") or scrap_source
-        return {
-            "lines": [reading],
-            "segments": [reading],
-            "unchanged": True,
-            "improvement": "echo",
-            "translation_state": {},
-            "tokens_used": 1,
-        }
+    PHRASE_EDITS = [
+        {"current_reading": "is naked", "translation": "goes bare"},
+        {"current_reading": "that dress", "translation": "only that gown"},
+        {"current_reading": "Tell me", "translation": "Say"},
+    ]
+
+    def request_phrase_edits(self, source_poem, current_reading, **kwargs):
+        return list(self.PHRASE_EDITS)
 
     def request_poem_variations(self, source_poem, current_reading, **kwargs):
         return [
@@ -227,14 +225,16 @@ class EngineRecordsItsPassageTests(RecordTestCase):
         self.assertEqual(lines[-1]["content"], CHOSEN)
         self.assertIn("attempt 1", lines[0]["note"])
 
-    def test_a_scrap_rewrite_is_recorded_with_what_it_bettered(self):
+    def test_the_whole_offered_field_is_recorded_not_only_what_was_applied(self):
         engine = self.make_engine()
         self.walk_stage_one(engine)
         engine.process_next_sensor_trigger()
 
         phrases = self.readings("phrases")
-        self.assertTrue(phrases)
-        self.assertEqual(phrases[0]["note"], "echo")
+        self.assertEqual(len(phrases), len(WordTranslator.PHRASE_EDITS))
+        self.assertEqual(phrases[0]["note"], "queued")
+        self.assertEqual(phrases[0]["source_text"], "is naked")
+        self.assertEqual(phrases[0]["content"], "goes bare")
 
     def test_the_way_home_is_marked_as_such(self):
         engine = self.make_engine()

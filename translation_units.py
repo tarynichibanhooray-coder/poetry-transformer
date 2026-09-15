@@ -254,6 +254,26 @@ class UnitPoem:
             unit.text.strip() for unit in self.units[start:end] if unit.is_visible()
         )
 
+    def find_span_for_text(self, text: str, max_span: int = 6) -> Optional[Tuple[int, int]]:
+        """Locate the first run of units whose current text matches `text`.
+
+        Stage 2 no longer dictates which words a change touches; the model
+        names the wording it is replacing and the engine has to find it.
+        Comparison ignores case and punctuation, since a scrap taken from
+        the page may not carry the exact casing the model echoes back.
+        """
+        target = word_sequence(text)
+        if not target:
+            return None
+        total = len(self.units)
+        limit = min(max_span, total) if max_span else total
+        for length in range(1, limit + 1):
+            for start in range(0, total - length + 1):
+                end = start + length
+                if word_sequence(self.text_for_span(start, end)) == target:
+                    return start, end
+        return None
+
     def source_line(self, line_index: int) -> str:
         spans = self.line_spans()
         if line_index >= len(spans):

@@ -89,18 +89,15 @@ class OneWordAtATime:
 
 
 class UnchangedPhrase:
-    """A phrase answer that is valid but leaves its scrap as it was."""
+    """A field of edits that name real wording but never actually change it."""
 
     last_exchange = {}
 
-    def request_phrase_translation(self, scrap_source, **kwargs):
-        reading = kwargs["current_reading"]
-        return {
-            "segments": [reading],
-            "unchanged": True,
-            "improvement": "already good",
-            "translation_state": {},
-        }
+    def request_phrase_edits(self, source_poem, current_reading, **kwargs):
+        return [
+            {"current_reading": "uno dos", "translation": "uno dos"},
+            {"current_reading": "cuatro cinco", "translation": "cuatro cinco"},
+        ]
 
     def clear_last_exchange(self):
         pass
@@ -225,7 +222,7 @@ class PoemChangeTestCase(unittest.TestCase):
     def put_up(self, title):
         """Make one poem live, as the deck or a hand pick would."""
         entry = self.database.retrieve_poem_entry_by_id(self.ids[title])
-        server._make_poem_live(entry, broadcast=False)
+        server._make_poem_live(entry, record_event=False)
 
     def finish_the_poem(self):
         """Drop the engine where a poem has run its whole journey."""
@@ -345,53 +342,62 @@ class OneTriggerOneAction(PoemChangeTestCase):
 
 
 class PhaseBoundaryPresentation(PoemChangeTestCase):
-    """A valid no-op must still look like a trigger on the live wall."""
+    """A copy of the current wording is not a trigger. Resting text is."""
 
     def capture_broadcasts(self):
         events = []
-        real = server._broadcast_event
+        real = server._publish_event
 
-        async def capture(event):
+        def capture(event, **kwargs):
             events.append(event)
+            return real(event, **kwargs)
 
-        server._broadcast_event = capture
-        self.addCleanup(setattr, server, "_broadcast_event", real)
+        server._publish_event = capture
+        self.addCleanup(setattr, server, "_publish_event", real)
         return events
 
-    def prepare_phrases(self, span_count):
+    def prepare_phrases(self, edits):
         self.put_up("First")
         server.engine.ai_translator = UnchangedPhrase()
         server.engine.phase_1_word_queue = []
         server.engine.transition_to_phrases()
-        server.engine.phrase_span_queue = [(0, 2)] * span_count
+        server.engine.phrase_edit_queue = list(edits)
 
-    def test_first_unchanged_phrase_after_words_is_presented(self):
-        self.prepare_phrases(span_count=2)
+    def test_a_field_of_unchanged_edits_is_not_a_trigger(self):
+        self.prepare_phrases([{"current_reading": "uno dos", "translation": "uno dos"}])
         events = self.capture_broadcasts()
 
         fire()
 
         event = events[-1]
         self.assertEqual(event["context_snapshot"]["phase"], "PHRASES")
-        self.assertEqual(event["context_snapshot"]["phase_after"], "PHRASES")
-        self.assertEqual(event["presentation_indices"], [0, 1])
+        self.assertEqual(event["presentation_indices"], [])
+        self.assertIsNone(server.engine.last_changed_span)
 
-    def test_last_unchanged_phrase_entering_lines_is_presented(self):
-        self.prepare_phrases(span_count=1)
+    def test_an_exhausted_edit_field_enters_lines(self):
+        # Once every offered edit turns out to be a no-op, there is nothing
+        # left for this stage to do -- same principle as stage 3 turning
+        # around when every ranked attempt is a repeat of the current page.
+        self.prepare_phrases([
+            {"current_reading": "uno dos", "translation": "uno dos"},
+            {"current_reading": "cuatro cinco", "translation": "cuatro cinco"},
+        ])
         events = self.capture_broadcasts()
 
         fire()
 
         event = events[-1]
+        self.assertEqual(event["context_snapshot"]["phase"], "PHRASES")
         self.assertEqual(event["context_snapshot"]["phase_after"], "LINES")
-        self.assertEqual(event["presentation_indices"], [0, 1])
+        self.assertEqual(event["presentation_indices"], [])
+        self.assertEqual(server.engine.phrase_edit_queue, [])
 
     def test_unchanged_line_stage_turnaround_is_presented(self):
         self.put_up("First")
         server.engine.ai_translator = NoVariations()
         server.engine.phase_1_word_queue = []
         server.engine.transition_to_phrases()
-        server.engine.phrase_span_queue = []
+        server.engine.phrase_edit_queue = []
         server.engine.transition_to_lines()
         events = self.capture_broadcasts()
 
@@ -411,7 +417,7 @@ class PhaseBoundaryPresentation(PoemChangeTestCase):
         server.engine.destination_lines = server.engine.home_poem.splitlines()
         server.engine.phase_1_word_queue = []
         server.engine.transition_to_phrases()
-        server.engine.phrase_span_queue = []
+        server.engine.phrase_edit_queue = []
         server.engine.transition_to_lines()
         events = self.capture_broadcasts()
 
@@ -435,9 +441,9 @@ class TriggersAtTheBoundary(PoemChangeTestCase):
         real = server._make_poem_live
         changes = []
 
-        def counted(entry, broadcast=True):
+        def counted(entry, record_event=True):
             changes.append(entry["id"])
-            return real(entry, broadcast=broadcast)
+            return real(entry, record_event=record_event)
 
         server._make_poem_live = counted
         self.addCleanup(setattr, server, "_make_poem_live", real)

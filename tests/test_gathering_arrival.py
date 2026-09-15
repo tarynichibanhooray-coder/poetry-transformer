@@ -50,16 +50,8 @@ class EchoTranslator:
     def validate_word_translation_response(self, response):
         return True
 
-    def request_phrase_translation(self, scrap_source, **kwargs):
-        reading = kwargs.get("current_reading") or scrap_source
-        return {
-            "lines": [reading],
-            "segments": [reading],
-            "unchanged": True,
-            "improvement": "echo",
-            "translation_state": {},
-            "tokens_used": 1,
-        }
+    def request_phrase_edits(self, source_poem, current_reading, **kwargs):
+        return []
 
     def request_poem_variations(self, source_poem, current_reading, **kwargs):
         return []
@@ -96,7 +88,7 @@ def start_lines(engine, *lines):
     """Put a reading on the page and drop the engine into stage 3."""
     engine.phase_1_word_queue = []
     engine.transition_to_phrases()
-    engine.phrase_span_queue = []
+    engine.phrase_edit_queue = []
     for line_index, line in enumerate(lines):
         engine.place_line_reading(line_index, line)
     engine.transition_to_lines()

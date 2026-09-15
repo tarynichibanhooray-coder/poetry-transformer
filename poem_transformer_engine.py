@@ -8,7 +8,8 @@ clipped, scattered, or repaired afterwards.
 Four stages, then the poem turns around:
 
   1) WORDS    one source word per trigger, translated in strict isolation
-  2) PHRASES  a two or three word scrap per trigger, its line visible as context
+  2) PHRASES  one call for three to ten small edits anywhere in the poem,
+              applied one per trigger, in the order offered
   3) LINES    one revision per trigger, each leaving the line closer to the
               rendering it is travelling toward
   4) origin and target swap and the same three stages run back the other way,
@@ -82,9 +83,8 @@ class PoemTransformerEngine:
         self.on_return_journey = False
 
         self.phase_1_word_queue = []
-        self.phrase_span_queue = []
+        self.phrase_edit_queue = []
         self.variation_queue = []
-        self.span_states = {}
         self.word_synonym_cycle_index = {}
         self.word_origins = {}
 
@@ -157,9 +157,8 @@ class PoemTransformerEngine:
         self.current_phase = TransformationPhase.WORDS
         self.trigger_count = 0
         self.phase_1_word_queue = self.build_phase_1_word_queue()
-        self.phrase_span_queue = []
+        self.phrase_edit_queue = []
         self.variation_queue = []
-        self.span_states = {}
         self.word_synonym_cycle_index = {}
         self.last_changed_span = None
         self.last_action_phase = None
@@ -175,23 +174,6 @@ class PoemTransformerEngine:
         indices = list(range(len(self.poem.units)))
         self.random_generator.shuffle(indices)
         return indices
-
-    def build_phrase_span_queue(self) -> List[Tuple[int, int]]:
-        """Cut each line into two and three unit scraps, left to right."""
-        sizes = list(config.BLOCK_GROWTH_WORD_SIZES) or [2, 3]
-        spans = []
-        for start, end in self.poem.line_spans():
-            cursor = start
-            while cursor < end:
-                size = self.random_generator.choice(sizes)
-                stop = min(cursor + size, end)
-                # A single unit left over joins the scrap before it rather
-                # than going back through the stage alone.
-                if end - stop == 1:
-                    stop = end
-                spans.append((cursor, stop))
-                cursor = stop
-        return spans
 
     # ------------------------------------------------------- server surface
 
@@ -285,12 +267,14 @@ class PoemTransformerEngine:
         return self.poem_has_arrived()
 
     def process_next_sensor_trigger(self) -> str:
-        """Advance until the wall text changes, or the exact resting text is reached.
+        """Advance until the wall wording changes, or the exact resting text is reached.
 
-        Stage 2 can join words without changing the page string. If this
-        loop only watches the string, it keeps taking scraps and then
-        walks Stage 3 until the poem is finished. One trigger is one scrap
-        or one attempt, even when the full text looks the same.
+        A copy of the current wording is not a trigger. Retry the same
+        step. Do not take other scraps or walk Stage 3 because the string
+        looks unchanged: that was a failed step, not a reason to skip
+        ahead. One trigger is one scrap or one attempt that changes the
+        page. The last Stage 2 scrap does not start Stage 3 on the same
+        tap.
         """
         if self.current_phase == TransformationPhase.COMPLETE:
             return self.get_current_transformation_state()
@@ -520,63 +504,84 @@ class PoemTransformerEngine:
     # -------------------------------------------------------------- stage 2
 
     def advance_phrases(self) -> None:
-        """One scrap, translated relationally with its own line as context."""
-        if not self.phrase_span_queue:
+        """Apply the next queued edit, in the order the model offered them.
+
+        Stage 2 asks once for a field of three-to-ten small edits and then
+        spends the following triggers walking through them, exactly as
+        stage 3 walks its ranked attempts. An edit whose wording can no
+        longer be found on the page, or that would not actually change
+        anything, is skipped in favor of the next one in the same trigger.
+        """
+        if not self.phrase_edit_queue:
+            self.load_phrase_edits()
+        if not self.phrase_edit_queue:
             self.transition_to_lines()
             return
 
-        start, end = self.phrase_span_queue.pop(0)
-        self.last_changed_span = (start, end)
         self.last_block_mode = 'phrase'
+        while self.phrase_edit_queue:
+            edit = self.phrase_edit_queue.pop(0)
+            current_reading = (edit.get('current_reading') or '').strip()
+            translation = (edit.get('translation') or '').strip()
 
-        scrap_source = self.poem.source_for_span(start, end)
-        current_reading = self.poem.text_for_span(start, end)
+            span = self.poem.find_span_for_text(current_reading) if current_reading else None
+            if span is None:
+                self.last_debug_note = (
+                    f"could not find {current_reading!r} on the page; skipped"
+                )
+                continue
 
+            start, end = span
+            located_text = self.poem.text_for_span(start, end)
+
+            if drops_content_words(located_text, translation):
+                self.last_block_defect = 'dropped_image'
+                self.last_debug_note = (
+                    f"skipped {located_text!r} → {translation!r}: content word dropped"
+                )
+                continue
+            if normalize_reading(translation) == normalize_reading(located_text):
+                self.last_debug_note = f"skipped {located_text!r}: no actual change"
+                continue
+
+            self.poem.place_span(start, end, [translation])
+            self.last_changed_span = (start, end)
+            self.last_block_improvement = f"{located_text} → {translation}"
+            self.record_block_history(located_text, translation)
+            break
+
+        if not self.phrase_edit_queue:
+            self.transition_to_lines()
+
+    def load_phrase_edits(self) -> None:
+        """Ask once for several small edits, anywhere in the poem."""
+        source_poem = '\n'.join(
+            self.poem.source_line(index)
+            for index in range(len(self.poem.line_spans()))
+        )
         try:
-            source_poem = '\n'.join(
-                self.poem.source_line(index)
-                for index in range(len(self.poem.line_spans()))
-            )
-            response = self.ai_translator.request_phrase_translation(
-                scrap_source,
-                current_reading=current_reading,
-                poem=source_poem,
-                current_state=self.get_current_transformation_state(),
+            edits = self.ai_translator.request_phrase_edits(
+                source_poem,
+                self.get_current_transformation_state(),
             )
         except Exception as error:
-            print(f"✗ Phrase stage failed on {scrap_source!r}: {error}")
-            self.last_debug_note = f"phrase {scrap_source!r} failed: {error}"
-            if not self.phrase_span_queue:
-                self.transition_to_lines()
-            return
+            print(f"✗ Phrase stage failed: {error}")
+            self.last_debug_note = f"phrase edits failed: {error}"
+            raise
 
-        segments = response.get('segments') or []
-        rewrite = ' '.join(segment for segment in segments if segment)
-        if not segments:
-            self.last_block_unchanged = True
-            self.last_block_improvement = 'nothing returned'
-        elif drops_content_words(current_reading, rewrite):
-            self.last_block_unchanged = True
-            self.last_block_defect = 'dropped_image'
-            self.last_block_improvement = 'refused: the scrap lost a word it names'
-            self.last_debug_note = (
-                f"refused {current_reading!r} → {rewrite!r}: content word dropped"
+        self.phrase_edit_queue = list(edits)
+        self.last_block_drafts = [
+            f"{edit.get('current_reading')} → {edit.get('translation')}"
+            for edit in self.phrase_edit_queue
+        ]
+
+        for edit in self.phrase_edit_queue:
+            self.record_iteration(
+                'phrases',
+                edit.get('translation') or '',
+                source_text=edit.get('current_reading') or '',
+                note='queued',
             )
-        else:
-            self.poem.place_span(start, end, segments)
-            self.remember_span_state(start, end, response.get('translation_state'))
-            self.last_block_improvement = response.get('improvement')
-
-        self.record_block_history(scrap_source, self.poem.text_for_span(start, end))
-        self.record_iteration(
-            'phrases',
-            self.poem.text_for_span(start, end),
-            source_text=scrap_source,
-            note=self.last_block_improvement or '',
-        )
-
-        if not self.phrase_span_queue:
-            self.transition_to_lines()
 
     # -------------------------------------------------------------- stage 3
 
@@ -752,9 +757,9 @@ class PoemTransformerEngine:
         if self.current_phase == TransformationPhase.PHRASES:
             return
         self.current_phase = TransformationPhase.PHRASES
-        self.phrase_span_queue = self.build_phrase_span_queue()
+        self.phrase_edit_queue = []
         if config.DEBUG_MODE:
-            print(f"→ Stage 2: phrases ({len(self.phrase_span_queue)} scraps)")
+            print("→ Stage 2: phrases")
 
     def transition_to_lines(self) -> None:
         if self.current_phase == TransformationPhase.LINES:
@@ -765,16 +770,6 @@ class PoemTransformerEngine:
             print("→ Stage 3: variations")
 
     # -------------------------------------------------------------- records
-
-    def remember_span_state(self, start: int, end: int, state: Dict = None) -> None:
-        """Keep the structured state a span came back with, for its next pass."""
-        state = state or {}
-        self.span_states[(start, end)] = {
-            "translation": state.get("translation") or self.poem.text_for_span(start, end),
-            "units": list(state.get("units") or []),
-            "revisions": list(state.get("revisions") or []),
-            "ambiguities": list(state.get("ambiguities") or []),
-        }
 
     def record_block_history(self, source_text: str, result_text: str) -> None:
         try:
@@ -815,26 +810,30 @@ class PoemTransformerEngine:
         if self.current_phase == TransformationPhase.WORDS:
             leg = words_done / 3.0
         elif self.current_phase == TransformationPhase.PHRASES:
-            spans = max(1, len(self.build_phrase_span_queue()))
-            leg = (1.0 + (spans - len(self.phrase_span_queue)) / spans) / 3.0
+            leg = (1.0 + self.queued_stage_progress(self.phrase_edit_queue)) / 3.0
         else:
-            leg = (2.0 + self.variation_stage_progress()) / 3.0
+            leg = (2.0 + self.queued_stage_progress(self.variation_queue)) / 3.0
 
         half = 50.0 * leg
         return round(half + 50.0 if self.on_return_journey else half, 1)
 
-    def variation_stage_progress(self) -> float:
-        """How far up the ranked attempts the poem has climbed."""
-        shown = len(self.last_block_drafts or [])
-        if not shown:
+    def queued_stage_progress(self, queue: List) -> float:
+        """How far a one-call-then-walk-the-queue stage has climbed.
+
+        Stages 2 and 3 both ask once for a field of options and then work
+        through them one per trigger, so both read progress the same way:
+        against the size of the field they were offered.
+        """
+        offered = len(self.last_block_drafts or [])
+        if not offered:
             return 0.0
-        return (shown - len(self.variation_queue)) / shown
+        return (offered - len(queue)) / offered
 
     def count_remaining_operations(self) -> int:
         if self.current_phase == TransformationPhase.WORDS:
             return len(self.phase_1_word_queue)
         if self.current_phase == TransformationPhase.PHRASES:
-            return len(self.phrase_span_queue)
+            return len(self.phrase_edit_queue)
         return len(self.variation_queue)
 
     def begin_debug_trigger(self) -> None:

@@ -3,12 +3,13 @@ system prompt plus exactly one of the three stage prompts.
 
 GLOBAL_TRANSLATION_INSTRUCTIONS  — every call
 WORD_PROMPT                      — 1) individual words, in strict isolation
-PHRASE_PROMPT                    — 2) a 2–3 word scrap, with its line as context
+PHRASE_PROMPT                    — 2) the whole poem, several small 2-3 word edits at once
 VARIATION_PROMPT                 — 3) the whole poem, several ranked attempts at once
 
-Stage 3 asks once and gets back a ranked field of complete attempts. They
-are shown one per trigger, worst first, and the chosen rendering is shown
-last. No stage is ever told where the poem is going.
+Stages 2 and 3 each ask once and get back a field of options: stage 2 a set
+of small edits anywhere in the poem, stage 3 a ranked field of complete
+attempts. Both are shown one per trigger; stage 3's last is the chosen
+rendering. No stage is ever told where the poem is going.
 
 After the chosen rendering, origin and target swap and the same three
 prompts run again in the other direction. Stage 1 is isolated both ways,
@@ -68,22 +69,29 @@ Do not echo the word already on the page. Write a translation, not a copy.
 """.strip()
 
 PHRASE_PROMPT = """
-You are a poetry teacher and a translator. You are given a poem and you can make a change of two or three words at a time in order to get it to a perfect place:
-the poem, the reading currently on the page for them
+You are a poetry teacher and a translator. You are given the poem in its
+original language and the reading currently on the page for the whole poem.
 
-You can change the words.
+Find between three and ten separate places in the current reading where a
+change of two or three words at a time would bring it closer to the
+original poem's meaning. Reorder, combine, invert a question, fix a wrong sense.
+Do not decorate. Each change touches only two or three consecutive
+words; do not rewrite a whole line or the whole poem in one change.
 
-Reorder, combine, invert a question, fix a wrong sense. Do not decorate.
+For each change, give current_reading exactly as it appears on the page
+right now, copied verbatim, and translation, your rewrite of those same
+two or three words and nothing else.
 
-A copy of a source-order gloss is a failed answer. So is a rewrite
-that is less faithful than the gloss you were given.
-
+You can change the words. Everything those words name has to survive.
 Do not add a subject, a dummy subject, an article, or a helper verb
-that is not present in this scrap and not required by the words in it.
-Do not translate the rest of the line. Return this scrap alone.
-Never return current_reading unchanged. That gloss is not a finished
-translation. It cannot be perfect and it cannot be "already good".
-Rewrite it. A copy of the text on the page is a failed answer.
+that is not present in the words you are changing and not required by
+them.
+
+Never propose a change whose translation is identical to its
+current_reading. That is not a change, and it wastes one of your three
+to ten places. So is a rewrite that is less faithful than the current
+reading. Propose only changes you are confident actually move the
+reading closer to the original.
 """.strip()
 
 VARIATION_PROMPT = """
@@ -178,14 +186,29 @@ TRANSLATION_STATE_SCHEMA = {
     "required": ["translation", "units", "revisions", "ambiguities"],
 }
 
-PHRASE_RESULT_SCHEMA = {
+MIN_PHRASE_EDITS = 3
+MAX_PHRASE_EDITS = 10
+
+PHRASE_EDITS_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "scrap": {"type": "string"},
-        "units": TRANSLATION_STATE_SCHEMA["properties"]["units"],
+        "edits": {
+            "type": "array",
+            "minItems": MIN_PHRASE_EDITS,
+            "maxItems": MAX_PHRASE_EDITS,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "current_reading": {"type": "string"},
+                    "translation": {"type": "string"},
+                },
+                "required": ["current_reading", "translation"],
+            },
+        },
     },
-    "required": ["scrap", "units"],
+    "required": ["edits"],
 }
 
 MIN_POEM_VARIATIONS = 5

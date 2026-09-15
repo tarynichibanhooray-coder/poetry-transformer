@@ -43,23 +43,28 @@ Give the word only. No part of speech, gloss, note, or parenthesis.
 
 ## Stage 2 — scraps
 
-A change of two or three words. The request is given the poem and the
-current page. The response is that scrap alone, not the rest of the line
-and not the whole poem.
+One model call. Between three and ten distinct edits across the whole
+poem. Each edit is a change of two or three words: reorder, combine,
+invert a question, fix a wrong sense. Do not decorate, and do not rewrite
+a whole line or the whole poem in one edit.
 
-The page reading is a gloss in source order. The work is to make that
-scrap read as the target language. Reorder, combine, invert a question,
-fix a wrong sense. Do not decorate.
+The model picks where to make each edit. It is not told which words to
+change; it is given the poem and the current page and finds its own three
+to ten places. Each edit names the exact wording it replaces, copied
+verbatim off the current page, and its rewrite of those same words.
 
-You can change the words. Everything the scrap names has to survive.
-Do not add a subject, dummy subject, article, or helper that is not in
-the scrap and not required by the words in it.
+They are applied one edit per trigger, in the order offered. Everything a
+scrap names has to survive: an edit may not drop a noun, a verb, or an
+image, and may not add a subject, dummy subject, article, or helper that
+is not in the words it is changing and not required by them.
 
-A copy of the source-order gloss is a failed answer. So is "already
-good." So is a rewrite less faithful than the gloss. Fidelity over
-prettiness.
+An edit whose rewrite is identical to the wording it replaces is not a
+change and is skipped in favor of the next one. So is an edit whose named
+wording can no longer be found on the page, because an earlier edit in
+the same batch already touched those words. Fewer than three edits is a
+failed call.
 
-When Stage 2 improves scraps, those scraps combine and the papers heal.
+When Stage 2 changes scraps, those scraps combine and the papers heal.
 
 ---
 

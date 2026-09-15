@@ -15,9 +15,10 @@ from openai import OpenAI, OpenAIError
 import config
 from translation_prompts import (
     GLOBAL_TRANSLATION_INSTRUCTIONS,
+    MIN_PHRASE_EDITS,
     MIN_POEM_VARIATIONS,
+    PHRASE_EDITS_SCHEMA,
     PHRASE_PROMPT,
-    PHRASE_RESULT_SCHEMA,
     POEM_VARIATIONS_SCHEMA,
     TRANSLATION_STATE_SCHEMA,
     VARIATION_PROMPT,
@@ -104,30 +105,54 @@ class OpenAITranslator:
         self.tag_last_exchange(kind="word")
         return self.strip_synonyms_from_function_words(response, source_word)
 
-    def request_phrase_translation(
+    def request_phrase_edits(
         self,
-        scrap_source: str,
-        current_reading: str = None,
-        poem: str = None,
-        current_state: str = None,
+        source_poem: str,
+        current_reading: str,
         **_ignored
-    ) -> Dict:
-        """Stage 2. The original poem and the current state. Scrap only comes back."""
-        state = self.request_translation_state(
-            PHRASE_PROMPT,
-            {
-                "poem": poem or "",
-                "current_state": current_state or "",
-            },
-            schema=PHRASE_RESULT_SCHEMA,
-            schema_name="phrase_result",
+    ) -> List[Dict]:
+        """Stage 2. One call: three to ten small changes, anywhere in the poem.
+
+        Nothing here pins an edit to a fixed position. Each edit names the
+        exact wording on the page it replaces, so the engine locates it
+        itself rather than being told in advance which words to touch.
+        """
+        extras = {"current_reading": current_reading or ""}
+        edits: List[Dict] = []
+        for _ in range(2):
+            state = self.request_translation_state(
+                PHRASE_PROMPT,
+                self.restricted_payload("phrase_edits", source_poem, None, extras=extras),
+                schema=PHRASE_EDITS_SCHEMA,
+                schema_name="phrase_edits",
+            )
+            self.tag_last_exchange(kind="phrase")
+            edits = self.phrase_edits_from_state(state)
+            if len(edits) >= MIN_PHRASE_EDITS:
+                return edits
+        raise ValueError(
+            f"Stage 2 requires at least {MIN_PHRASE_EDITS} edits, got {len(edits)}"
         )
-        state["translation"] = str(state.get("scrap") or "").strip()
-        response = self.block_response_from_state(state, [current_reading or scrap_source])
-        if state["translation"]:
-            response["segments"] = [state["translation"]]
-        self.tag_last_exchange(kind="phrase")
-        return response
+
+    def phrase_edits_from_state(self, state: Dict) -> List[Dict]:
+        """Distinct, non-empty, actually-different edits, in the order offered."""
+        seen = set()
+        edits = []
+        for item in (state.get("edits") or []):
+            if not isinstance(item, dict):
+                continue
+            current_reading = str(item.get("current_reading") or "").strip()
+            translation = str(item.get("translation") or "").strip()
+            if not current_reading or not translation:
+                continue
+            if self._norm(current_reading) == self._norm(translation):
+                continue
+            key = (self._norm(current_reading), self._norm(translation))
+            if key in seen:
+                continue
+            seen.add(key)
+            edits.append({"current_reading": current_reading, "translation": translation})
+        return edits
 
     def request_poem_variations(
         self,
@@ -360,88 +385,6 @@ class OpenAITranslator:
             "tokens_used": state.get("tokens_used"),
         }
 
-    def block_response_from_state(
-        self,
-        state: Dict,
-        fallback_lines: List[str]
-    ) -> Dict:
-        translation = str(state.get("translation") or "").strip()
-        if not translation and fallback_lines:
-            translation = "\n".join(fallback_lines)
-        lines = translation.split("\n") if translation else list(fallback_lines or [])
-        previous = "\n".join(fallback_lines or [])
-        revisions = [
-            revision for revision in (state.get("revisions") or [])
-            if isinstance(revision, dict)
-        ]
-        same_reading = self._norm(translation) == self._norm(previous)
-        reorder = (not same_reading) and self._same_tokens(translation, previous)
-        caused_by = ""
-        if revisions:
-            caused_by = str(revisions[0].get("caused_by") or "").strip()
-        defect = self.defect_from_caused_by(
-            caused_by,
-            unchanged=same_reading,
-            reorder=reorder,
-        )
-        unchanged = same_reading
-        return {
-            "lines": lines,
-            "drafts": [],
-            # The model's own segmentation of this span, which is what the
-            # page places. Falling back to the whole reading keeps a span
-            # readable when the model answered without segmenting.
-            "segments": [
-                str(unit.get("translation") or "").strip()
-                for unit in (state.get("units") or [])
-                if isinstance(unit, dict) and str(unit.get("translation") or "").strip()
-            ] or ([translation] if translation else []),
-            "unchanged": unchanged,
-            "improvement": caused_by or (
-                "word order" if reorder else ("echo" if unchanged else "rewrite")
-            ),
-            "defect": defect,
-            "units": [unit for unit in (state.get("units") or []) if isinstance(unit, dict)],
-            "revisions": revisions,
-            "ambiguities": [
-                item for item in (state.get("ambiguities") or []) if isinstance(item, dict)
-            ],
-            "translation_state": {
-                "translation": translation,
-                "units": [unit for unit in (state.get("units") or []) if isinstance(unit, dict)],
-                "revisions": revisions,
-                "ambiguities": [
-                    item for item in (state.get("ambiguities") or []) if isinstance(item, dict)
-                ],
-            },
-            "tokens_used": state.get("tokens_used"),
-        }
-
-    def defect_from_caused_by(
-        self,
-        caused_by: str,
-        unchanged: bool = False,
-        reorder: bool = False
-    ) -> str:
-        if unchanged:
-            return "none"
-        lowered = (caused_by or "").strip().casefold()
-        if not lowered:
-            return "word_order" if reorder else "none"
-        if any(token in lowered for token in ("more poetic", "smoother", "elegant", "prefer")):
-            return "none"
-        if "order" in lowered or "syntax" in lowered:
-            return "word_order"
-        if "grammar" in lowered:
-            return "grammar"
-        if "crib" in lowered:
-            return "crib"
-        if "image" in lowered or "drop" in lowered:
-            return "dropped_image"
-        if "sense" in lowered or "meaning" in lowered:
-            return "wrong_sense"
-        return "closer_to_original"
-
     def strip_synonyms_from_function_words(
         self,
         response: Dict,
@@ -473,9 +416,6 @@ class OpenAITranslator:
 
     def _norm(self, text: str) -> str:
         return " ".join((text or "").casefold().split())
-
-    def _same_tokens(self, left: str, right: str) -> bool:
-        return sorted(self._norm(left).split()) == sorted(self._norm(right).split())
 
     def send_message_to_openai_and_parse_json(
         self,

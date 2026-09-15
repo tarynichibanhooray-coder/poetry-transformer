@@ -135,11 +135,6 @@ STREAM_OUTPUT_JSONL_PATH = Path(
 # TRANSFORMATION PHASE CONFIGURATION
 # ============================================================================
 
-# Short blocks of this many words, staying inside a line. A trigger after
-# Phase 1 picks among these, whole lines, and stanzas; nothing is booked in
-# advance, so the target is not a countdown.
-BLOCK_GROWTH_WORD_SIZES = [2, 3]
-
 # Stage 3 asks for several complete readings of the poem in one call and
 # shows them worst first. Five attempts written to settle on one right
 # answer come back nearly identical, so this stage runs warmer than the

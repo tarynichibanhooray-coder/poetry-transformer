@@ -44,8 +44,20 @@ class CapturingTranslator(OpenAITranslator):
         if payload.get("stage") == "variations":
             return {
                 "variations": [
-                    {"rank": 1, "translation": "a reading", "captures": "little"},
-                    {"rank": 2, "translation": "a truer reading", "captures": "more"},
+                    {"rank": 1, "translation": "a weak reading", "captures": "little"},
+                    {"rank": 2, "translation": "a middling reading", "captures": "some"},
+                    {"rank": 3, "translation": "a fuller reading", "captures": "more"},
+                    {"rank": 4, "translation": "a truer reading", "captures": "most"},
+                    {"rank": 5, "translation": "the truest reading", "captures": "all"},
+                ],
+                "tokens_used": 1,
+            }
+        if payload.get("stage") == "phrase_edits":
+            return {
+                "edits": [
+                    {"current_reading": "is naked", "translation": "goes bare"},
+                    {"current_reading": "that dress", "translation": "only that gown"},
+                    {"current_reading": "Tell me", "translation": "Say"},
                 ],
                 "tokens_used": 1,
             }
@@ -68,12 +80,15 @@ class CapturingTranslator(OpenAITranslator):
 
 class SpyTranslator(EchoTranslator):
     def __init__(self):
-        self.phrase_calls = []
+        self.phrase_edit_calls = []
         self.variation_calls = []
 
-    def request_phrase_translation(self, scrap_source, **kwargs):
-        self.phrase_calls.append({"scrap_source": scrap_source, **kwargs})
-        return super().request_phrase_translation(scrap_source, **kwargs)
+    def request_phrase_edits(self, source_poem, current_reading, **kwargs):
+        self.phrase_edit_calls.append({
+            "source_poem": source_poem,
+            "current_reading": current_reading,
+        })
+        return super().request_phrase_edits(source_poem, current_reading, **kwargs)
 
     def request_poem_variations(self, source_poem, current_reading, **kwargs):
         self.variation_calls.append(
@@ -154,26 +169,25 @@ class StageOnePayloadTests(unittest.TestCase):
 
 
 class StageTwoPayloadTests(unittest.TestCase):
-    def test_a_scrap_is_sent_with_its_line_but_not_the_target(self):
+    def test_the_call_is_given_the_poem_and_the_page_but_not_the_target(self):
         translator = CapturingTranslator()
-        translator.request_phrase_translation(
-            "rosa está desnuda",
-            source_line="Dime, la rosa está desnuda",
-            current_reading="the rose is naked",
+        translator.request_phrase_edits(
+            COUPLET,
+            "Tell me, the rose is naked\nor only has that dress?",
         )
-        self.assertEqual(translator.captured_stage, "phrase")
+        self.assertEqual(translator.captured_stage, "phrase_edits")
         self.assertEqual(translator.captured_prompt, PHRASE_PROMPT)
 
         payload = translator.captured_payload
-        self.assertEqual(payload["visible_text"], "rosa está desnuda")
-        self.assertEqual(payload["source_line"], "Dime, la rosa está desnuda")
-        self.assertEqual(payload["current_reading"], "the rose is naked")
+        self.assertEqual(payload["visible_text"], COUPLET)
+        self.assertIn("only has that dress", payload["current_reading"])
 
+        # No stage is told where the poem is going, this one included.
         blob = payload_blob(payload)
-        self.assertNotIn("vestido", blob)
-        self.assertNotIn("tell me, is the rose naked", blob)
+        self.assertNotIn("is the rose naked", blob)
+        self.assertNotIn("her only dress", blob)
 
-    def test_the_engine_sends_the_whole_line_as_context(self):
+    def test_the_engine_sends_the_whole_poem_and_page_not_a_chosen_span(self):
         engine = make_engine()
         spy = SpyTranslator()
         engine.ai_translator = spy
@@ -181,50 +195,92 @@ class StageTwoPayloadTests(unittest.TestCase):
         engine.transition_to_phrases()
         engine.process_next_sensor_trigger()
 
-        self.assertTrue(spy.phrase_calls)
-        call = spy.phrase_calls[-1]
-        self.assertIn(call["source_line"], COUPLET.split("\n"))
-        self.assertIn(call["scrap_source"], call["source_line"])
-        self.assertNotEqual(call["scrap_source"], "")
+        self.assertTrue(spy.phrase_edit_calls)
+        call = spy.phrase_edit_calls[-1]
+        self.assertEqual(call["source_poem"], COUPLET)
+        self.assertEqual(call["current_reading"], engine.get_current_transformation_state())
 
-    def test_a_scrap_is_two_or_three_units(self):
-        engine = make_engine()
-        engine.phase_1_word_queue = []
-        engine.transition_to_phrases()
-        self.assertTrue(engine.phrase_span_queue)
-        for start, end in engine.phrase_span_queue:
-            self.assertGreaterEqual(end - start, 2)
-            self.assertLessEqual(end - start, 4)
+    def test_stage_2_requires_at_least_three_edits(self):
+        translator = OpenAITranslator.__new__(OpenAITranslator)
+        translator.last_exchange = None
+        translator.request_translation_state = lambda *a, **k: {
+            "edits": [{"current_reading": "a", "translation": "b"}],
+            "tokens_used": 1,
+        }
+        with self.assertRaises(ValueError):
+            translator.request_phrase_edits(COUPLET, "a reading")
 
     def test_the_phrase_prompt_asks_for_movement(self):
         self.assertIn("poetry teacher and a translator", PHRASE_PROMPT)
-        self.assertIn("two or three words at a time", PHRASE_PROMPT)
+        self.assertIn("between three and ten", PHRASE_PROMPT)
+        self.assertIn("two or three", PHRASE_PROMPT)
         self.assertIn("Reorder, combine, invert a question, fix a wrong sense", PHRASE_PROMPT)
         self.assertIn("Do not decorate", PHRASE_PROMPT)
-        self.assertIn("You can change the words", PHRASE_PROMPT)
+        self.assertIn("copied verbatim", PHRASE_PROMPT)
 
-    def test_a_scrap_may_not_quietly_lose_a_noun(self):
+    def test_an_edit_may_not_quietly_lose_a_noun(self):
         engine = make_engine()
         engine.phase_1_word_queue = []
         engine.transition_to_phrases()
-        engine.phrase_span_queue = [(2, 5)]
-        for index, text in enumerate(["Tell me,", "the", "rose", "is", "naked"]):
-            engine.poem.units[index].text = text
         before = engine.get_current_transformation_state()
 
-        class DroppingTranslator(EchoTranslator):
-            def request_phrase_translation(self, scrap_source, **kwargs):
-                return {
-                    "lines": ["is naked"],
-                    "segments": ["is naked"],
-                    "improvement": "tightened",
-                    "tokens_used": 1,
-                }
-
-        engine.ai_translator = DroppingTranslator()
+        engine.phrase_edit_queue = [
+            # Drops "rosa", a noun the scrap names -- refused.
+            {"current_reading": "rosa está desnuda", "translation": "está desnuda"},
+            # A real change, further down the same batch.
+            {"current_reading": "ese vestido", "translation": "aquel vestido"},
+        ]
         engine.process_next_sensor_trigger()
-        self.assertEqual(engine.get_current_transformation_state(), before)
+
+        self.assertNotEqual(engine.get_current_transformation_state(), before)
         self.assertEqual(engine.last_block_defect, "dropped_image")
+        self.assertIn("aquel vestido", engine.get_current_transformation_state())
+        self.assertEqual(engine.phrase_edit_queue, [])
+
+    def test_a_copy_of_the_current_wording_is_not_applied(self):
+        engine = make_engine()
+        engine.phase_1_word_queue = []
+        engine.transition_to_phrases()
+        before = engine.get_current_transformation_state()
+
+        engine.phrase_edit_queue = [
+            {"current_reading": "la rosa", "translation": "la rosa"},
+        ]
+        engine.process_next_sensor_trigger()
+
+        self.assertEqual(engine.get_current_transformation_state(), before)
+        self.assertIsNone(engine.last_changed_span)
+
+    def test_an_edit_naming_wording_no_longer_on_the_page_is_skipped(self):
+        engine = make_engine()
+        engine.phase_1_word_queue = []
+        engine.transition_to_phrases()
+        before = engine.get_current_transformation_state()
+
+        engine.phrase_edit_queue = [
+            {"current_reading": "not on the page at all", "translation": "anything"},
+            {"current_reading": "ese vestido", "translation": "aquel vestido"},
+        ]
+        engine.process_next_sensor_trigger()
+
+        self.assertNotEqual(engine.get_current_transformation_state(), before)
+        self.assertIn("aquel vestido", engine.get_current_transformation_state())
+
+    def test_one_applied_edit_is_one_trigger(self):
+        engine = make_engine()
+        engine.phase_1_word_queue = []
+        engine.transition_to_phrases()
+        before = engine.get_current_transformation_state()
+
+        engine.phrase_edit_queue = [
+            {"current_reading": "la rosa", "translation": "esa rosa"},
+            {"current_reading": "ese vestido", "translation": "aquel vestido"},
+        ]
+        engine.process_next_sensor_trigger()
+
+        self.assertNotEqual(engine.get_current_transformation_state(), before)
+        self.assertEqual(len(engine.phrase_edit_queue), 1)
+        self.assertEqual(engine.get_current_phase(), TransformationPhase.PHRASES)
 
 
 class StageThreePayloadTests(unittest.TestCase):
@@ -310,7 +366,7 @@ class StageOrderTests(unittest.TestCase):
         engine.transition_to_phrases()
         self.assertEqual(engine.get_current_phase(), TransformationPhase.PHRASES)
 
-        engine.phrase_span_queue = []
+        engine.phrase_edit_queue = []
         engine.process_next_sensor_trigger()
         self.assertEqual(engine.get_current_phase(), TransformationPhase.LINES)
 
@@ -363,38 +419,29 @@ class LayeredRequestTests(unittest.TestCase):
         self.assertEqual(messages[1]["content"], "STAGE TEXT")
         self.assertEqual(messages[2]["content"], '{"stage":"phrase"}')
 
-    def test_the_models_own_segmentation_comes_back_as_segments(self):
+    def test_edits_are_deduplicated_and_blank_ones_dropped(self):
         translator = OpenAITranslator.__new__(OpenAITranslator)
-        response = translator.block_response_from_state(
-            {
-                "translation": "is the rose",
-                "units": [
-                    {"id": "1", "source": "está", "translation": "is",
-                     "alternatives": [], "confidence": "resolved"},
-                    {"id": "2", "source": "la", "translation": "the",
-                     "alternatives": [], "confidence": "resolved"},
-                    {"id": "3", "source": "rosa", "translation": "rose",
-                     "alternatives": [], "confidence": "resolved"},
-                ],
-                "revisions": [],
-                "ambiguities": [],
-            },
-            ["the rose is"],
-        )
-        self.assertEqual(response["segments"], ["is", "the", "rose"])
+        edits = translator.phrase_edits_from_state({
+            "edits": [
+                {"current_reading": "la rosa", "translation": "esa rosa"},
+                {"current_reading": "La Rosa", "translation": "Esa Rosa"},
+                {"current_reading": "", "translation": "anything"},
+                {"current_reading": "ese vestido", "translation": ""},
+            ]
+        })
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["current_reading"], "la rosa")
 
-    def test_an_unsegmented_answer_still_yields_one_segment(self):
+    def test_a_no_op_edit_is_not_offered(self):
         translator = OpenAITranslator.__new__(OpenAITranslator)
-        response = translator.block_response_from_state(
-            {
-                "translation": "is the rose",
-                "units": [],
-                "revisions": [],
-                "ambiguities": [],
-            },
-            ["the rose is"],
-        )
-        self.assertEqual(response["segments"], ["is the rose"])
+        edits = translator.phrase_edits_from_state({
+            "edits": [
+                {"current_reading": "la rosa", "translation": "La Rosa"},
+                {"current_reading": "ese vestido", "translation": "aquel vestido"},
+            ]
+        })
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["current_reading"], "ese vestido")
 
 
 if __name__ == "__main__":
