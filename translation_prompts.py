@@ -87,7 +87,7 @@ Rewrite it. A copy of the text on the page is a failed answer.
 """.strip()
 
 VARIATION_PROMPT = """
-You are a poetry teacher and a translator. You are given the poem in its original language, the reading currently on
+You are given the poem in its original language, the reading currently on
 the page, and the name of the language to write in.
 
 Write at least five complete and distinct variations of the whole poem.

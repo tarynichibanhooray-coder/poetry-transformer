@@ -107,27 +107,18 @@ class OpenAITranslator:
     def request_phrase_translation(
         self,
         scrap_source: str,
-        source_line: str = None,
         current_reading: str = None,
-        previous_state: Optional[Dict] = None,
         poem: str = None,
         current_state: str = None,
         **_ignored
     ) -> Dict:
-        """Stage 2. The poem and the current page, two or three words to change."""
+        """Stage 2. The original poem and the current state. Scrap only comes back."""
         state = self.request_translation_state(
             PHRASE_PROMPT,
-            self.restricted_payload(
-                "phrase",
-                scrap_source,
-                previous_state,
-                extras={
-                    "poem": poem or "",
-                    "current_state": current_state or "",
-                    "current_reading": current_reading or "",
-                    "source_line": source_line or scrap_source,
-                },
-            ),
+            {
+                "poem": poem or "",
+                "current_state": current_state or "",
+            },
             schema=PHRASE_RESULT_SCHEMA,
             schema_name="phrase_result",
         )

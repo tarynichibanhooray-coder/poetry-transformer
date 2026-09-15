@@ -529,7 +529,6 @@ class PoemTransformerEngine:
         self.last_changed_span = (start, end)
         self.last_block_mode = 'phrase'
 
-        line_index = self.poem.line_index_for(start)
         scrap_source = self.poem.source_for_span(start, end)
         current_reading = self.poem.text_for_span(start, end)
 
@@ -540,9 +539,7 @@ class PoemTransformerEngine:
             )
             response = self.ai_translator.request_phrase_translation(
                 scrap_source,
-                source_line=self.poem.source_line(line_index),
                 current_reading=current_reading,
-                previous_state=self.span_states.get((start, end)),
                 poem=source_poem,
                 current_state=self.get_current_transformation_state(),
             )
