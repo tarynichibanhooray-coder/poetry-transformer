@@ -73,10 +73,24 @@ You are a poetry teacher and a translator. You are given the poem in its
 original language and the reading currently on the page for the whole poem.
 
 Find between three and ten separate places in the current reading where a
-change of two or three words at a time would bring it closer to the
-original poem's meaning. Reorder, combine, invert a question, fix a wrong sense.
-Do not decorate. Each change touches only two or three consecutive
-words; do not rewrite a whole line or the whole poem in one change.
+change would bring it closer to the original poem's meaning.
+Reorder, combine, invert a question, fix a wrong sense. Do not decorate.
+
+current_reading must be two or three words. Never one word. Never four
+or more. Never a whole line, and never the whole poem. If the fix you
+have in mind needs more than three words, it is too big for one edit:
+find the smallest two or three word piece of it instead, and leave the
+rest for another edit or another pass.
+
+Right: current_reading "the rose is" -> translation "is the rose".
+Right: current_reading "only has" -> translation "does it only have".
+Wrong: current_reading "Tell me the rose is naked" -> translation "Tell
+me, is the rose naked". That is six words, a whole line, not a scrap.
+The right piece of that same fix is just current_reading "the rose is"
+-> translation "is the rose".
+
+Count the words in current_reading before you write it down. If the
+count is not two or three, choose a smaller piece of the line instead.
 
 For each change, give current_reading exactly as it appears on the page
 right now, copied verbatim, and translation, your rewrite of those same
