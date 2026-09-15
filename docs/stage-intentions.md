@@ -31,9 +31,9 @@ of that same word. Lookalikes are not senses. On the way home the word
 is not ambiguous: `origin_word` is settled history, and that is the
 primary.
 
-One trigger takes one word. The wall plays every sense through that slot,
-then settles on the primary. That cycle is Stage 1. Flattening it into a
-single swap is not Stage 1.
+One trigger takes one word. The wall plays the other senses through that
+slot, then settles on the primary. The primary is only the last reading.
+That cycle is Stage 1. Flattening it into a single swap is not Stage 1.
 
 The papers stay torn. Stage 1 is the only stage that stays unhealed.
 
