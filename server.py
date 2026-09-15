@@ -452,24 +452,16 @@ async def _run_one_trigger() -> None:
 
             prev_state = engine.get_current_transformation_state()
             if engine.get_current_phase() == TransformationPhase.WORDS:
-                if (
-                    not engine.phase_1_word_queue
-                    and engine.trigger_count == 0
-                    and engine.last_action_phase is None
-                ):
-                    engine.phase_1_word_queue = engine.build_phase_1_word_queue()
                 word_index = engine.claim_next_phase_1_word_index()
-                if word_index is None:
-                    engine.transition_to_phrases()
+                if word_index is not None:
+                    try:
+                        await _run_synonym_cycle_for_word(
+                            word_index, sequence_index, prev_state
+                        )
+                    except Exception:
+                        engine.return_phase_1_word(word_index)
+                        raise
                     return
-                try:
-                    await _run_synonym_cycle_for_word(
-                        word_index, sequence_index, prev_state
-                    )
-                except Exception:
-                    engine.return_phase_1_word(word_index)
-                    raise
-                return
             await _run_block_trigger(sequence_index, prev_state)
     except Exception as error:
         print(f"✗ Trigger failed: {error}")
