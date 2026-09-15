@@ -51,7 +51,7 @@ poem_deck = PoemDeck()
 
 # Lock to serialize synonym cycles so they don't overlap
 _cycle_lock = asyncio.Lock()
-SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "2.4"))
+SYNONYM_CYCLE_INTERVAL = float(os.environ.get("SYNONYM_CYCLE_INTERVAL", "1.2"))
 LOG_INTERMEDIATE_SYNONYMS = os.environ.get(
     "LOG_INTERMEDIATE_SYNONYMS", "false"
 ).lower() in ("1", "true", "yes")
