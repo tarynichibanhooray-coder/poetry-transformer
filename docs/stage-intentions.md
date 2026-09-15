@@ -35,6 +35,8 @@ One trigger takes one word. The wall plays every sense through that slot,
 then settles on the primary. That cycle is Stage 1. Flattening it into a
 single swap is not Stage 1.
 
+The papers stay torn. Stage 1 is the only stage that stays unhealed.
+
 Give the word only. No part of speech, gloss, note, or parenthesis.
 
 ---
@@ -57,8 +59,7 @@ A copy of the source-order gloss is a failed answer. So is "already
 good." So is a rewrite less faithful than the gloss. Fidelity over
 prettiness.
 
-When Stage 2 changes scraps, those scraps combine. That join is the
-change. The rest of the page is not stitched together with them.
+When Stage 2 improves scraps, those scraps combine and the papers heal.
 
 ---
 
@@ -69,7 +70,8 @@ Fidelity to the original outranks elegance, economy, and the reading on
 the page. Nothing decided earlier binds this stage.
 
 They are shown one attempt per trigger, worst first. The last one shown
-is the stored final for that direction.
+is the stored final for that direction. The papers heal. This is a whole
+reading, not torn scraps.
 
 Fewer than five, or two that differ only in punctuation, is a failed
 call. None may repeat the current page.

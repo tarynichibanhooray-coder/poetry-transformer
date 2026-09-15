@@ -478,7 +478,7 @@
       await wait(FADE_MS);
     }
 
-    async function showChangedWords(indices, words, separators, stateText, color, { recolorPoem, heal, combineScraps }) {
+    async function showChangedWords(indices, words, separators, stateText, color, { recolorPoem, heal, healPapers }) {
       const currentWords = Array.isArray(lastWords) && lastWords.length ? lastWords : words;
       const structureChanged = filledIndices(currentWords).join(',') !== filledIndices(words).join(',');
 
@@ -527,10 +527,8 @@
         }
 
         if (heal && Array.isArray(words)) {
-          if (combineScraps && indices.length > 1) {
-            const first = Math.min(...indices);
-            const last = Math.max(...indices);
-            seams = new Set([...seams].filter(index => index <= first || index > last));
+          if (healPapers) {
+            seams = new Set();
           }
           renderSlots(words, separators, stateText, null);
           paintPoem(poemColor);
@@ -617,7 +615,7 @@
       await showChangedWords(indices, words, separators, stateText, nextColor, {
         recolorPoem: !isIntermediate,
         heal: !isIntermediate,
-        combineScraps: snapshot.phase === 'PHRASES'
+        healPapers: snapshot.phase === 'PHRASES' || snapshot.phase === 'LINES'
       });
 
       lastWords = words ? words.slice() : [];
